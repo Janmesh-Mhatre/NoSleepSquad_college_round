@@ -2,10 +2,27 @@ import { DatabaseSync } from "node:sqlite";
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import pg from "pg";
 import { env } from "./config/env.js";
 import { MerkleTree } from "./services/merkleTree.js";
 
 let dbInstance: DatabaseSync | null = null;
+let pgPoolInstance: pg.Pool | null = null;
+
+export function getPostgresPool(): pg.Pool | null {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) return null;
+
+  if (!pgPoolInstance) {
+    pgPoolInstance = new pg.Pool({
+      connectionString,
+      max: 20,
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 3000,
+    });
+  }
+  return pgPoolInstance;
+}
 
 export function getDatabase(): DatabaseSync {
   if (dbInstance) return dbInstance;
@@ -73,7 +90,17 @@ function initSchema(db: DatabaseSync) {
       assigned_moderator TEXT,
       audit_committed INTEGER DEFAULT 0,
       audit_batch_id TEXT,
+      retention_expires_at TEXT,
+      is_purged INTEGER DEFAULT 0,
       FOREIGN KEY(category_id) REFERENCES categories(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS security_events (
+      id TEXT PRIMARY KEY,
+      event_type TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('INFO', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')),
+      details TEXT NOT NULL,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS moderation_actions (
@@ -110,13 +137,24 @@ function initSchema(db: DatabaseSync) {
       created_at TEXT NOT NULL,
       FOREIGN KEY(batch_id) REFERENCES audit_batches(id) ON DELETE CASCADE
     );
+  `);
 
+  try {
+    db.exec("ALTER TABLE reports ADD COLUMN retention_expires_at TEXT;");
+  } catch {}
+  try {
+    db.exec("ALTER TABLE reports ADD COLUMN is_purged INTEGER DEFAULT 0;");
+  } catch {}
+
+  db.exec(`
     CREATE INDEX IF NOT EXISTS idx_members_ref ON members(member_ref);
     CREATE INDEX IF NOT EXISTS idx_credentials_member_id ON credentials(member_id);
     CREATE INDEX IF NOT EXISTS idx_reports_ref ON reports(reference);
     CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status);
     CREATE INDEX IF NOT EXISTS idx_reports_nullifier ON reports(nullifier_hash);
     CREATE INDEX IF NOT EXISTS idx_audit_batches_seq ON audit_batches(sequence);
+    CREATE INDEX IF NOT EXISTS idx_reports_retention ON reports(retention_expires_at);
+    CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(event_type);
   `);
 }
 

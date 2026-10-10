@@ -65,6 +65,8 @@ export interface AuditPublisher {
  */
 export class BlockchainAuditAdapter implements AuditPublisher {
   private rpcUrl: string;
+  private backupRpcUrl: string;
+  private activeRpcUrl: string;
   private contractAddress: string;
   private privateKey: string;
   private provider: ethers.JsonRpcProvider | null = null;
@@ -73,12 +75,15 @@ export class BlockchainAuditAdapter implements AuditPublisher {
 
   constructor(options?: {
     rpcUrl?: string;
+    backupRpcUrl?: string;
     contractAddress?: string;
     privateKey?: string;
     customProvider?: ethers.JsonRpcProvider;
     customSigner?: ethers.Wallet;
   }) {
     this.rpcUrl = options?.rpcUrl || process.env.BLOCKCHAIN_RPC_URL || env.blockchainRpcUrl;
+    this.backupRpcUrl = options?.backupRpcUrl || process.env.BLOCKCHAIN_BACKUP_RPC_URL || "";
+    this.activeRpcUrl = this.rpcUrl;
     this.contractAddress = options?.contractAddress || process.env.CONTRACT_ADDRESS || env.contractAddress;
     this.privateKey = options?.privateKey || process.env.BLOCKCHAIN_PRIVATE_KEY || env.blockchainPrivateKey;
 
@@ -91,14 +96,17 @@ export class BlockchainAuditAdapter implements AuditPublisher {
     }
   }
 
-  private initializeProvider() {
-    if (!this.rpcUrl || !this.contractAddress) {
+  public initializeProvider(useBackup = false) {
+    const targetRpc = useBackup && this.backupRpcUrl ? this.backupRpcUrl : this.rpcUrl;
+    this.activeRpcUrl = targetRpc;
+
+    if (!targetRpc || !this.contractAddress) {
       return;
     }
 
     try {
       const net = ethers.Network.from(31337);
-      this.provider = new ethers.JsonRpcProvider(this.rpcUrl, net, {
+      this.provider = new ethers.JsonRpcProvider(targetRpc, net, {
         staticNetwork: net,
         batchMaxCount: 1,
       });
@@ -116,6 +124,16 @@ export class BlockchainAuditAdapter implements AuditPublisher {
       this.signer = null;
       this.contract = null;
     }
+  }
+
+  public getActiveRpcUrl(): string {
+    return this.activeRpcUrl;
+  }
+
+  public failoverToBackup(): boolean {
+    if (!this.backupRpcUrl) return false;
+    this.initializeProvider(true);
+    return true;
   }
 
   destroy(): void {

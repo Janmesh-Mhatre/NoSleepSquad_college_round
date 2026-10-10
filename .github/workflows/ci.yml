@@ -1,0 +1,43 @@
+name: Incognito Continuous Integration
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  audit-and-test:
+    name: Lint, Test & Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Hardhat Contract Compilation & Tests
+        run: |
+          npm run blockchain:compile
+          npm run blockchain:test
+
+      - name: Run Backend & Security Test Suite (Phases A–I)
+        run: npm run test:backend
+        env:
+          NODE_ENV: test
+          ENCRYPTION_KEY: dev-only-local-encryption-key-32b!
+          AUTH_SECRET: dev-only-local-auth-secret-min-32-chars-key!
+
+      - name: Run Frontend Tests
+        run: npm run test:frontend
+
+      - name: Production Web Application Build
+        run: npm run build
