@@ -43,13 +43,23 @@ export function createApp() {
 
   app.use(express.json({ limit: "64kb" }));
 
+  // In production, strictly enforce strong secrets and fail closed on insecure configurations
+  if (env.nodeEnv === "production" || process.env.NODE_ENV === "production") {
+    if (!env.authSecret || env.authSecret.length < 32 || env.authSecret.includes("dev-only")) {
+      throw new Error("FATAL: Production requires a securely injected AUTH_SECRET with at least 32 characters.");
+    }
+    if (!env.encryptionKey || env.encryptionKey.length < 32 || env.encryptionKey.includes("dev-only")) {
+      throw new Error("FATAL: Production requires a securely injected ENCRYPTION_KEY with at least 32 characters.");
+    }
+  }
+
   // Development/Test token endpoint (strictly unavailable in production)
-  if (env.nodeEnv !== "production") {
+  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
     app.post("/api/auth/dev-token", (req, res) => {
-      const { role = "moderator", sub = "dev-user-01" } = req.body || {};
-      if (!["member", "moderator", "admin"].includes(role)) {
-        return res.status(400).json({ error: "invalid_role", message: "Role must be member, moderator, or admin." });
-      }
+      // In development, callers cannot select arbitrary administrative roles without qualification.
+      // Issues standard verified 'member' token for development workflows.
+      const sub = typeof req.body?.sub === "string" && req.body.sub.trim() ? req.body.sub.trim() : "dev-user-01";
+      const role = "member";
       const token = authService.generateToken({ sub, role });
       res.json({ token, role, sub });
     });

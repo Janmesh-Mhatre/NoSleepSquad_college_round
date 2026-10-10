@@ -33,7 +33,10 @@ moderatorRouter.post("/moderator/reports/:id/action", (req, res, next) => {
   try {
     const { action, reason, newStatus } = req.body || {};
     // Authenticated moderator identity derived strictly from verified server-side claims
-    const verifiedModeratorId = req.user?.sub || "moderator-session";
+    if (!req.user?.sub) {
+      return res.status(401).json({ error: "unauthenticated", message: "Authenticated moderator identity required." });
+    }
+    const verifiedModeratorId = req.user.sub;
     const result = reportService.applyModeratorAction({
       reportId: req.params.id,
       action,

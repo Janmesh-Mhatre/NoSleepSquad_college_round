@@ -65,17 +65,17 @@ export class ZkProofService {
     `).all() as { leafIndex: number; commitment: string; isActive: number }[];
 
     if (rows.length === 0) {
-      // Initialize tree with a genesis anchor commitment to establish group state
-      const genesisIdentity = new Identity("INCOGNITO-GENESIS-ANCHOR-SECRET-KEY");
-      const genesisCommitment = genesisIdentity.commitment.toString();
+      // Initialize tree with a safe unprovable non-member anchor scalar (SHA-256 mod BN254 scalar field)
+      // Contains no discrete logarithm or known Semaphore private key, preventing anyone from generating false proofs
+      const unprovableAnchorScalar = (BigInt("0x" + crypto.createHash("sha256").update("INCOGNITO:UNPROVABLE:GENESIS:NON_MEMBER:V2").digest("hex")) >> 8n).toString();
 
       const now = new Date().toISOString();
       db.prepare(`
         INSERT OR IGNORE INTO membership_commitments (leaf_index, commitment, is_active, created_at)
         VALUES (0, ?, 1, ?)
-      `).run(genesisCommitment, now);
+      `).run(unprovableAnchorScalar, now);
 
-      this.semaphoreGroup = new Group([BigInt(genesisCommitment)]);
+      this.semaphoreGroup = new Group([BigInt(unprovableAnchorScalar)]);
       const activeRoot = this.semaphoreGroup.root.toString();
 
       db.prepare(`
@@ -317,15 +317,35 @@ export class ZkProofService {
   }
 
   /**
-   * Records a verified nullifier to prevent replay attacks under the same scope.
+   * Atomically records and consumes a verified nullifier to prevent replay attacks under the same scope.
+   * Uses an atomic database insert with unique constraint; throws if already consumed.
    */
-  recordNullifier(nullifier: string, topicScope: string, reportId?: string): void {
+  consumeNullifier(nullifier: string, topicScope: string, reportId?: string): void {
     const db = getDatabase();
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT OR IGNORE INTO used_nullifiers (nullifier, topic_scope, report_id, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(nullifier, topicScope, reportId || null, now);
+    try {
+      db.prepare(`
+        INSERT INTO used_nullifiers (nullifier, topic_scope, report_id, created_at)
+        VALUES (?, ?, ?, ?)
+      `).run(nullifier, topicScope, reportId || null, now);
+    } catch (err: any) {
+      if (
+        err?.code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
+        err?.message?.includes("UNIQUE constraint failed") ||
+        err?.code === "23505"
+      ) {
+        throw new Error("Nullifier replay detected: nullifier has already been consumed for this topic scope.");
+      }
+      throw err;
+    }
+  }
+
+  recordNullifier(nullifier: string, topicScope: string, reportId?: string): void {
+    try {
+      this.consumeNullifier(nullifier, topicScope, reportId);
+    } catch {
+      // Compatibility fallback for non-throwing callers
+    }
   }
 
   getActiveRoot(): string {

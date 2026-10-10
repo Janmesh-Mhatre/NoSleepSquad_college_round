@@ -105,7 +105,10 @@ export class BlockchainAuditAdapter implements AuditPublisher {
     }
 
     try {
-      const net = ethers.Network.from(31337);
+      const configuredChainId = process.env.CHAIN_ID
+        ? Number.parseInt(process.env.CHAIN_ID, 10)
+        : (process.env.NODE_ENV === "production" ? 11155111 : 31337);
+      const net = ethers.Network.from(configuredChainId);
       this.provider = new ethers.JsonRpcProvider(targetRpc, net, {
         staticNetwork: net,
         batchMaxCount: 1,

@@ -25,6 +25,15 @@ export function getPostgresPool(): pg.Pool | null {
 }
 
 export function getDatabase(): DatabaseSync {
+  if (env.nodeEnv === "production" || process.env.NODE_ENV === "production") {
+    const pgUrl = process.env.DATABASE_URL;
+    if (!pgUrl || (!pgUrl.startsWith("postgres://") && !pgUrl.startsWith("postgresql://"))) {
+      throw new Error(
+        "FATAL: Production environment requires a valid PostgreSQL connection (DATABASE_URL starting with postgres:// or postgresql://). SQLite is strictly prohibited in production."
+      );
+    }
+  }
+
   if (dbInstance) return dbInstance;
 
   const dbPath = env.databasePath;
@@ -171,25 +180,28 @@ function seedInitialData(db: DatabaseSync) {
     insertCat.run("cat-other", "Other", "General institutional concern not covered by standard categories", "standard");
   }
 
-  // 2. Seed Demo Member if empty
-  const memberCount = db.prepare("SELECT count(*) as c FROM members").get() as { c: number };
-  if (memberCount.c === 0) {
-    const now = new Date().toISOString();
-    const expires = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-    const memberId = "mem-demo-01";
-    const credId = "cred-demo-01";
-    const commitment = crypto.createHash("sha256").update("incognito:cred:demo-member-01:salt99").digest("hex");
+  // 2. Seed Demo Member only in local development / testing
+  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
+    const memberCount = db.prepare("SELECT count(*) as c FROM members").get() as { c: number };
+    if (memberCount.c === 0) {
+      const now = new Date().toISOString();
+      const expires = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
+      const memberId = "mem-demo-01";
+      const credId = "cred-demo-01";
+      const commitment = crypto.createHash("sha256").update("incognito:cred:demo-member-01:salt99").digest("hex");
 
-    db.prepare("INSERT INTO members (id, member_ref, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)")
-      .run(memberId, "demo-member-01", now, now);
+      db.prepare("INSERT INTO members (id, member_ref, status, created_at, updated_at) VALUES (?, ?, 'active', ?, ?)")
+        .run(memberId, "demo-member-01", now, now);
 
-    db.prepare("INSERT INTO credentials (id, member_id, commitment, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, 'registered', ?, ?, ?)")
-      .run(credId, memberId, commitment, now, now, expires);
+      db.prepare("INSERT INTO credentials (id, member_id, commitment, status, created_at, updated_at, expires_at) VALUES (?, ?, ?, 'registered', ?, ?, ?)")
+        .run(credId, memberId, commitment, now, now, expires);
+    }
   }
 
-  // 3. Seed Sample Reports and Audit Batch if empty
-  const repCount = db.prepare("SELECT count(*) as c FROM reports").get() as { c: number };
-  if (repCount.c === 0) {
+  // 3. Seed Sample Reports only in local development / testing
+  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
+    const repCount = db.prepare("SELECT count(*) as c FROM reports").get() as { c: number };
+    if (repCount.c === 0) {
     const now = new Date(Date.now() - 3600 * 1000 * 48).toISOString();
     const batchId = "batch-101";
 
@@ -293,6 +305,7 @@ function seedInitialData(db: DatabaseSync) {
       insertAuditRecord.run(`ar-${i + 1}`, batchId, reports[i].ref, commitments[i], now);
     }
   }
+}
 
   // Ensure any existing batch-101 has its Merkle root calculated with pairwise MerkleTree
   const existingBatch = db.prepare("SELECT id, merkle_root FROM audit_batches WHERE id = 'batch-101'").get() as any;

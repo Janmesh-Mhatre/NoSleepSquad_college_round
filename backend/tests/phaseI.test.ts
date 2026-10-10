@@ -17,15 +17,14 @@ test("PHASE I — Full Protocol Lifecycle & Resilient Failure-Path Test Suite", 
   await t.test("I1. Complete 20-Step Protocol Lifecycle: From Institutional OIDC to On-Chain Audit & Resolution", async () => {
     // Step 1 & 2: Student authenticates through institutional identity provider; eligibility verified
     const studentSub = "stu-flow-994";
-    const institutionalToken = `eyJhbGciOiJub25lIn0.${Buffer.from(
-      JSON.stringify({
-        sub: studentSub,
-        email: "whistleblower@university.edu",
-        aud: "incognito-institutional-app-id",
-        exp: Math.floor(Date.now() / 1000) + 3600,
-        roles: ["Student"],
-      })
-    ).toString("base64url")}.sig`;
+    const institutionalToken = oidcService.signToken({
+      sub: studentSub,
+      email: "whistleblower@university.edu",
+      aud: "incognito-institutional-app-id",
+      iss: "https://login.microsoftonline.com/institutional-tenant/v2.0",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+      roles: ["Student"],
+    });
 
     const oidcResult = await oidcService.verifyInstitutionalToken(institutionalToken);
     assert.strictEqual(oidcResult.eligible, true);
@@ -112,14 +111,13 @@ test("PHASE I — Full Protocol Lifecycle & Resilient Failure-Path Test Suite", 
 
   await t.test("I2. Deliberate Failure-Path Testing: Outages and attacks fail safely", async () => {
     // 1. OIDC Outage / Invalid domain fails safely
-    const attackerToken = `eyJhbGciOiJub25lIn0.${Buffer.from(
-      JSON.stringify({
-        sub: "attacker",
-        email: "malicious@external-domain.com",
-        aud: "incognito-institutional-app-id",
-        exp: Math.floor(Date.now() / 1000) + 3600,
-      })
-    ).toString("base64url")}.sig`;
+    const attackerToken = oidcService.signToken({
+      sub: "attacker",
+      email: "malicious@external-domain.com",
+      aud: "incognito-institutional-app-id",
+      iss: "https://login.microsoftonline.com/institutional-tenant/v2.0",
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    });
 
     await assert.rejects(
       async () => oidcService.verifyInstitutionalToken(attackerToken),

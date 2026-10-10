@@ -18,7 +18,7 @@ export class MembershipError extends Error {
 
 export interface MembershipService {
   getStatus(memberRef: string): MembershipStatusDTO;
-  enroll(memberRef: string): EnrollMemberResponse;
+  enroll(memberRef: string, clientCommitment?: string): EnrollMemberResponse;
   revoke(memberRef: string, reason?: string): RevokeMemberResponse;
   validate(memberRef: string): ValidateMemberResponse;
   getMemberByRef(memberRef: string): MemberRecord | null;

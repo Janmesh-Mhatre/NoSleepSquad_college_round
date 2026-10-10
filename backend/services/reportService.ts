@@ -10,6 +10,7 @@ import type {
   ModerationActionRecord,
 } from "../models/report.js";
 import { moderationService } from "./moderationService.js";
+import { moderationPipeline } from "../moderation/pipeline.js";
 import { zkProofService, type ZkMembershipProof } from "./zkProofService.js";
 import { keyService } from "./keyService.js";
 
@@ -101,14 +102,22 @@ export class ReportService {
       }
       nullifierHash = proof.nullifier;
     } else {
+      if (env.nodeEnv === "production" || process.env.NODE_ENV === "production") {
+        throw new ReportError("invalid_proof", "Cryptographic zero-knowledge membership proof is strictly required in production.", 400);
+      }
       const contentDigest = crypto.createHash("sha256").update(body.trim().toLowerCase()).digest("hex");
       const nullifierSeed = proofNullifier || `incognito:scope:${categoryId}:${contentDigest}`;
       nullifierHash = crypto.createHash("sha256").update(nullifierSeed).digest("hex");
     }
 
-    // Check duplicate submission for this topic/scope
-    const existing = db.prepare("SELECT id, reference FROM reports WHERE nullifier_hash = ?").get(nullifierHash);
-    if (existing) {
+    // Generate report ID and timestamp
+    const id = crypto.randomUUID();
+    const now = new Date().toISOString();
+
+    // Atomically consume nullifier to prevent concurrent replay race conditions
+    try {
+      zkProofService.consumeNullifier(nullifierHash, categoryId, id);
+    } catch (err: any) {
       throw new ReportError("duplicate", "A submission already exists for this reporting scope.", 409);
     }
 
@@ -120,19 +129,16 @@ export class ReportService {
     // Real authenticated AES-256-GCM encryption before persistence
     const encryptedBody = encryptPayload(body.trim());
 
-    // Execute automated moderation
-    const moderation = moderationService.analyzeContent(body, categoryId);
+    // Execute automated moderation via the complete AI Moderation Pipeline
+    const moderation = await moderationPipeline.evaluate(body, categoryId);
 
-    // Initial priority
+    // Determine initial priority
     let priority: ReportPriority = "medium";
-    if (moderation.urgencyScore >= 75 || category.risk_tier === "urgent") {
+    if (moderation.urgencyScore >= 75 || category.risk_tier === "urgent" || moderation.classification === "escalated") {
       priority = "high";
     } else if (moderation.urgencyScore <= 30) {
       priority = "low";
     }
-
-    const id = crypto.randomUUID();
-    const now = new Date().toISOString();
 
     const insertStmt = db.prepare(`
       INSERT INTO reports (
@@ -141,18 +147,25 @@ export class ReportService {
       ) VALUES (?, ?, ?, ?, ?, ?, 'received', ?, ?, ?, ?, 0)
     `);
 
-    insertStmt.run(
-      id,
-      reference,
-      statusSecretHash,
-      categoryId,
-      encryptedBody,
-      priority,
-      JSON.stringify(moderation),
-      nullifierHash,
-      now,
-      now
-    );
+    try {
+      insertStmt.run(
+        id,
+        reference,
+        statusSecretHash,
+        categoryId,
+        encryptedBody,
+        priority,
+        JSON.stringify(moderation),
+        nullifierHash,
+        now,
+        now
+      );
+    } catch (err: any) {
+      if (err?.code === "SQLITE_CONSTRAINT_PRIMARYKEY" || err?.message?.includes("UNIQUE constraint failed")) {
+        throw new ReportError("duplicate", "A submission already exists for this reporting scope.", 409);
+      }
+      throw err;
+    }
 
     return {
       reference,

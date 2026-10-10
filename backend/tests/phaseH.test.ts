@@ -42,15 +42,16 @@ test("PHASE H — External API Integration & Resilient Architecture", async (t) 
   });
 
   await t.test("H3. Institutional OIDC: Validates institutional domain & audience without PII leakage", async () => {
-    // 1. Valid institutional token from authorized domain
+    // 1. Valid institutional token from authorized domain with genuine cryptographic signature
     const validPayload = {
       sub: "student-sub-994821",
       email: "whistleblower@university.edu",
       aud: "incognito-institutional-app-id",
+      iss: "https://login.microsoftonline.com/institutional-tenant/v2.0",
       exp: Math.floor(Date.now() / 1000) + 3600,
       roles: ["Student"],
     };
-    const validToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(validPayload)).toString("base64url")}.sig`;
+    const validToken = oidcService.signToken(validPayload);
 
     const identity = await oidcService.verifyInstitutionalToken(validToken);
     assert.strictEqual(identity.eligible, true);
@@ -58,28 +59,54 @@ test("PHASE H — External API Integration & Resilient Architecture", async (t) 
     assert.strictEqual(identity.role, "student");
     assert.ok(identity.eligibilityProofHash, "Pseudonymous proof hash must be generated");
 
-    // 2. Unauthorized email domain rejected
+    // 2. Algorithm 'none' attack is strictly rejected
+    const noneToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(validPayload)).toString("base64url")}.invalidsig`;
+    await assert.rejects(
+      async () => oidcService.verifyInstitutionalToken(noneToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "unsupported_algorithm"
+    );
+
+    // 3. Cryptographic signature tampering is strictly rejected
+    const tamperedSigToken = validToken.substring(0, validToken.length - 4) + "abcd";
+    await assert.rejects(
+      async () => oidcService.verifyInstitutionalToken(tamperedSigToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "invalid_signature"
+    );
+
+    // 4. Unauthorized email domain rejected
     const foreignPayload = {
       ...validPayload,
       email: "attacker@gmail.com",
     };
-    const foreignToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(foreignPayload)).toString("base64url")}.sig`;
+    const foreignToken = oidcService.signToken(foreignPayload);
 
     await assert.rejects(
       async () => oidcService.verifyInstitutionalToken(foreignToken),
       (err: any) => err instanceof OidcAuthError && err.code === "unauthorized_domain"
     );
 
-    // 3. Expired token rejected
+    // 5. Expired token rejected
     const expiredPayload = {
       ...validPayload,
       exp: Math.floor(Date.now() / 1000) - 300,
     };
-    const expiredToken = `eyJhbGciOiJub25lIn0.${Buffer.from(JSON.stringify(expiredPayload)).toString("base64url")}.sig`;
+    const expiredToken = oidcService.signToken(expiredPayload);
 
     await assert.rejects(
       async () => oidcService.verifyInstitutionalToken(expiredToken),
       (err: any) => err instanceof OidcAuthError && err.code === "token_expired"
+    );
+
+    // 6. Audience mismatch rejected
+    const wrongAudPayload = {
+      ...validPayload,
+      aud: "wrong-audience-id",
+    };
+    const wrongAudToken = oidcService.signToken(wrongAudPayload);
+
+    await assert.rejects(
+      async () => oidcService.verifyInstitutionalToken(wrongAudToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "invalid_audience"
     );
   });
 

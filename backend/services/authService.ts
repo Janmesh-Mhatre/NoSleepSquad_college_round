@@ -81,7 +81,19 @@ export class JwtAuthProvider implements IAuthProvider {
 
     const [headerB64, payloadB64, signature] = parts;
 
-    // Verify signature
+    // Parse and validate header
+    let header: { alg?: string; typ?: string };
+    try {
+      header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf-8"));
+    } catch {
+      throw new AuthError("malformed_header", "Token header could not be decoded.", 401);
+    }
+
+    if (!header || typeof header !== "object" || header.alg !== "HS256") {
+      throw new AuthError("invalid_algorithm", "Unsupported or rejected signing algorithm. HS256 required.", 401);
+    }
+
+    // Verify cryptographic HMAC signature
     const expectedSig = crypto
       .createHmac("sha256", this.secret)
       .update(`${headerB64}.${payloadB64}`)
@@ -95,7 +107,7 @@ export class JwtAuthProvider implements IAuthProvider {
     }
 
     // Parse payload
-    let claims: AuthClaims;
+    let claims: AuthClaims & { nbf?: number };
     try {
       claims = JSON.parse(Buffer.from(payloadB64, "base64url").toString("utf-8"));
     } catch {
@@ -111,8 +123,19 @@ export class JwtAuthProvider implements IAuthProvider {
       throw new AuthError("invalid_role", "Token role must be member, moderator, or admin.", 401);
     }
 
-    // Verify expiration
+    // Verify issuer if present
+    if (claims.iss && claims.iss !== "incognito-auth-service") {
+      throw new AuthError("invalid_issuer", "Token issuer is invalid.", 401);
+    }
+
     const now = Math.floor(Date.now() / 1000);
+
+    // Verify not-before
+    if (typeof claims.nbf === "number" && claims.nbf > now) {
+      throw new AuthError("token_not_active", "Token is not yet active.", 401);
+    }
+
+    // Verify expiration
     if (claims.exp <= now) {
       throw new AuthError("token_expired", "Authentication token has expired.", 401);
     }
