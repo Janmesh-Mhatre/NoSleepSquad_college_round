@@ -1,6 +1,6 @@
 import cors from "cors";
 import express, { type ErrorRequestHandler } from "express";
-import { env } from "./config/env.js";
+import { env, assertEnvironmentSecurity } from "./config/env.js";
 import { healthRouter } from "./routes/health.js";
 import { membershipRouter } from "./routes/membership.js";
 import { credentialRouter } from "./routes/credential.js";
@@ -11,6 +11,7 @@ import { securityRouter } from "./routes/security.js";
 import { requireRole } from "./middleware/auth.js";
 import { createRateLimiter } from "./middleware/rateLimiter.js";
 import { authService } from "./services/authService.js";
+import { oidcService, OidcAuthError } from "./services/oidcService.js";
 
 export function createApp() {
   const app = express();
@@ -43,27 +44,72 @@ export function createApp() {
 
   app.use(express.json({ limit: "64kb" }));
 
-  // In production, strictly enforce strong secrets and fail closed on insecure configurations
-  if (env.nodeEnv === "production" || process.env.NODE_ENV === "production") {
-    if (!env.authSecret || env.authSecret.length < 32 || env.authSecret.includes("dev-only")) {
-      throw new Error("FATAL: Production requires a securely injected AUTH_SECRET with at least 32 characters.");
-    }
-    if (!env.encryptionKey || env.encryptionKey.length < 32 || env.encryptionKey.includes("dev-only")) {
-      throw new Error("FATAL: Production requires a securely injected ENCRYPTION_KEY with at least 32 characters.");
-    }
-  }
+  // Enforce startup security invariants across all environments
+  assertEnvironmentSecurity();
 
-  // Development/Test token endpoint (strictly unavailable in production)
-  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
-    app.post("/api/auth/dev-token", (req, res) => {
-      // In development, callers cannot select arbitrary administrative roles without qualification.
-      // Issues standard verified 'member' token for development workflows.
-      const sub = typeof req.body?.sub === "string" && req.body.sub.trim() ? req.body.sub.trim() : "dev-user-01";
-      const role = "member";
-      const token = authService.generateToken({ sub, role });
-      res.json({ token, role, sub });
-    });
-  }
+  // Development/Test token endpoint (strictly development-only, requires explicit ALLOW_DEV_AUTH=true)
+  app.post("/api/auth/dev-token", (req, res) => {
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    const currentEnv = (process.env.NODE_ENV || "development").toLowerCase();
+    const isDev = currentEnv === "development" || currentEnv === "test";
+    const devAuthAllowed = isDev && (process.env.ALLOW_DEV_AUTH === "true" || process.env.DEV_AUTH_ENABLED === "true");
+
+    if (isDeployed || !devAuthAllowed) {
+      return res.status(403).json({
+        error: "dev_auth_disabled",
+        message: "Development authentication endpoints are strictly prohibited in deployed environments and require explicit ALLOW_DEV_AUTH=true in development.",
+      });
+    }
+
+    const sub = typeof req.body?.sub === "string" && req.body.sub.trim() ? req.body.sub.trim() : "dev-user-01";
+    const role = "member";
+    const token = authService.generateToken({ sub, role });
+    return res.json({ token, role, sub });
+  });
+
+  // Institutional OIDC Token Verification & Session Issuance endpoint
+  app.post("/api/auth/oidc/verify", async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      const idToken =
+        (req.body?.idToken as string) ||
+        (authHeader && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : null);
+
+      if (!idToken) {
+        return res.status(400).json({
+          error: "invalid_request",
+          message: "Institutional OIDC ID token is required.",
+        });
+      }
+
+      const identity = await oidcService.verifyInstitutionalToken(idToken);
+      if (!identity.eligible) {
+        return res.status(403).json({
+          error: "ineligible",
+          message: "Institutional account is not eligible for reporting.",
+        });
+      }
+
+      // Issue authenticated member session token bound to the privacy-preserving eligibility hash
+      const sessionToken = authService.generateToken({
+        sub: identity.eligibilityProofHash,
+        role: "member",
+        org: identity.institutionDomain,
+      });
+
+      return res.json({
+        eligible: true,
+        institutionDomain: identity.institutionDomain,
+        role: identity.role,
+        sessionToken,
+      });
+    } catch (err: any) {
+      if (err instanceof OidcAuthError) {
+        return res.status(err.status).json({ error: err.code, message: err.message });
+      }
+      return res.status(401).json({ error: "invalid_token", message: "OIDC token verification failed." });
+    }
+  });
 
   // Rate Limiting
   const reportSubmissionLimiter = createRateLimiter({

@@ -128,6 +128,11 @@ export class JwtAuthProvider implements IAuthProvider {
       throw new AuthError("invalid_issuer", "Token issuer is invalid.", 401);
     }
 
+    // Verify audience if present
+    if ((claims as any).aud && (claims as any).aud !== "incognito-app") {
+      throw new AuthError("invalid_audience", "Token audience is invalid.", 401);
+    }
+
     const now = Math.floor(Date.now() / 1000);
 
     // Verify not-before
@@ -146,14 +151,15 @@ export class JwtAuthProvider implements IAuthProvider {
 
 /**
  * Isolated Mock Authentication Provider for local testing/development.
- * Explicitly rejects initialization in production.
+ * Explicitly rejects initialization in deployed environments (staging / production).
  */
 export class MockAuthProvider implements IAuthProvider {
   private jwtProvider: JwtAuthProvider;
 
   constructor() {
-    if (process.env.NODE_ENV === "production" || env.nodeEnv === "production") {
-      throw new Error("FATAL: MockAuthProvider is strictly prohibited in production environments.");
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    if (isDeployed) {
+      throw new Error("FATAL: MockAuthProvider is strictly prohibited in production and staging environments.");
     }
     this.jwtProvider = new JwtAuthProvider("mock-dev-testing-secret-only-never-in-prod!");
   }
@@ -163,8 +169,9 @@ export class MockAuthProvider implements IAuthProvider {
   }
 
   verifyToken(token: string): AuthClaims {
-    if (process.env.NODE_ENV === "production" || env.nodeEnv === "production") {
-      throw new AuthError("mock_disabled_in_prod", "Mock authentication disabled in production.", 401);
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    if (isDeployed) {
+      throw new AuthError("mock_disabled_in_deployed", "Mock authentication disabled in deployed environments.", 401);
     }
     return this.jwtProvider.verifyToken(token);
   }
@@ -177,7 +184,11 @@ class AuthService {
   private provider: IAuthProvider;
 
   constructor() {
-    if (env.authProvider === "mock" && env.nodeEnv !== "production") {
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    const isDev = (process.env.NODE_ENV || "development").toLowerCase() === "development" || (process.env.NODE_ENV || "development").toLowerCase() === "test";
+    const devAuthAllowed = isDev && (process.env.ALLOW_DEV_AUTH === "true" || process.env.DEV_AUTH_ENABLED === "true");
+
+    if (env.authProvider === "mock" && !isDeployed && devAuthAllowed) {
       this.provider = new MockAuthProvider();
     } else {
       this.provider = new JwtAuthProvider();

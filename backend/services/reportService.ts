@@ -102,8 +102,13 @@ export class ReportService {
       }
       nullifierHash = proof.nullifier;
     } else {
-      if (env.nodeEnv === "production" || process.env.NODE_ENV === "production") {
-        throw new ReportError("invalid_proof", "Cryptographic zero-knowledge membership proof is strictly required in production.", 400);
+      const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+      if (isDeployed) {
+        throw new ReportError(
+          "invalid_proof",
+          "Cryptographic zero-knowledge membership proof is strictly required in deployed environments (production & staging).",
+          400
+        );
       }
       const contentDigest = crypto.createHash("sha256").update(body.trim().toLowerCase()).digest("hex");
       const nullifierSeed = proofNullifier || `incognito:scope:${categoryId}:${contentDigest}`;

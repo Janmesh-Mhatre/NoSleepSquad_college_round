@@ -180,8 +180,12 @@ function seedInitialData(db: DatabaseSync) {
     insertCat.run("cat-other", "Other", "General institutional concern not covered by standard categories", "standard");
   }
 
-  // 2. Seed Demo Member only in local development / testing
-  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
+  // 2. Seed Demo Member only in local development when explicitly configured
+  const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+  const isDev = (process.env.NODE_ENV || "development").toLowerCase() === "development" || (process.env.NODE_ENV || "development").toLowerCase() === "test";
+  const devAuthAllowed = isDev && (process.env.ALLOW_DEV_AUTH === "true" || process.env.DEV_AUTH_ENABLED === "true");
+
+  if (!isDeployed && devAuthAllowed) {
     const memberCount = db.prepare("SELECT count(*) as c FROM members").get() as { c: number };
     if (memberCount.c === 0) {
       const now = new Date().toISOString();
@@ -199,7 +203,7 @@ function seedInitialData(db: DatabaseSync) {
   }
 
   // 3. Seed Sample Reports only in local development / testing
-  if (env.nodeEnv !== "production" && process.env.NODE_ENV !== "production") {
+  if (!isDeployed && isDev) {
     const repCount = db.prepare("SELECT count(*) as c FROM reports").get() as { c: number };
     if (repCount.c === 0) {
     const now = new Date(Date.now() - 3600 * 1000 * 48).toISOString();
