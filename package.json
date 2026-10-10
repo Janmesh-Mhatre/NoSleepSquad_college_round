@@ -1,0 +1,42 @@
+{
+  "name": "incognito",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx backend/server.ts",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "blockchain:compile": "node ./node_modules/hardhat/internal/cli/bootstrap.js compile",
+    "blockchain:test": "node ./node_modules/hardhat/internal/cli/bootstrap.js test",
+    "blockchain:node": "node ./node_modules/hardhat/internal/cli/bootstrap.js node",
+    "blockchain:deploy": "node ./node_modules/hardhat/internal/cli/bootstrap.js run blockchain/scripts/deploy.cjs",
+    "test:backend": "tsx --test --test-force-exit --test-concurrency=1 backend/tests/backend.test.ts backend/tests/phaseA.test.ts backend/tests/phaseB.test.ts backend/tests/phaseC.test.ts backend/tests/phaseD.test.ts",
+    "test:frontend": "tsx --test --test-force-exit src/tests/frontend.test.ts",
+    "test": "tsx --test --test-force-exit --test-concurrency=1 backend/tests/backend.test.ts backend/tests/phaseA.test.ts backend/tests/phaseB.test.ts backend/tests/phaseC.test.ts backend/tests/phaseD.test.ts && tsx --test --test-force-exit src/tests/frontend.test.ts"
+  },
+  "dependencies": {
+    "@semaphore-protocol/core": "^4.14.3",
+    "cors": "^2.8.6",
+    "ethers": "^6.17.0",
+    "express": "^5.3.0",
+    "lucide-react": "^0.383.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.1.2",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/react": "^18.3.5",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "hardhat": "^2.28.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.3"
+  }
+}

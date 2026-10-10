@@ -1,0 +1,41 @@
+{
+  "_format": "hh-sol-cache-2",
+  "files": {
+    "C:\\Users\\Janmesh Mhatre\\Desktop\\Programmes\\Projects\\incognito-v2\\blockchain\\contracts\\AuditRegistry.sol": {
+      "lastModificationDate": 1791665421997,
+      "contentHash": "aa47e6d88cba5ddd83660f1bd4b61a68",
+      "sourceName": "blockchain/contracts/AuditRegistry.sol",
+      "solcConfig": {
+        "version": "0.8.20",
+        "settings": {
+          "optimizer": {
+            "enabled": true,
+            "runs": 200
+          },
+          "evmVersion": "paris",
+          "outputSelection": {
+            "*": {
+              "*": [
+                "abi",
+                "evm.bytecode",
+                "evm.deployedBytecode",
+                "evm.methodIdentifiers",
+                "metadata"
+              ],
+              "": [
+                "ast"
+              ]
+            }
+          }
+        }
+      },
+      "imports": [],
+      "versionPragmas": [
+        "^0.8.20"
+      ],
+      "artifacts": [
+        "AuditRegistry"
+      ]
+    }
+  }
+}
