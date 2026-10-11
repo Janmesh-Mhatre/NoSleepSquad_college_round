@@ -59,6 +59,23 @@ export function assertEnvironmentSecurity(): void {
         `FATAL: ${currentEnv.toUpperCase()} requires OIDC_CLIENT_ID to be configured.`
       );
     }
+    const rawPseudonymSecret = process.env.PSEUDONYM_SECRET;
+    if (!rawPseudonymSecret || rawPseudonymSecret.length < 32 || rawPseudonymSecret.includes("dev-only")) {
+      throw new Error(
+        `FATAL: ${currentEnv.toUpperCase()} requires PSEUDONYM_SECRET to be configured (min 32 chars). Hardcoded fallback salt is forbidden.`
+      );
+    }
+    if (!rawOidcIssuer.startsWith("https://")) {
+      throw new Error(
+        `FATAL: ${currentEnv.toUpperCase()} OIDC_ISSUER_URL must use HTTPS in deployed environments.`
+      );
+    }
+    const rawOidcJwks = process.env.OIDC_JWKS_URI;
+    if (rawOidcJwks && !rawOidcJwks.startsWith("https://")) {
+      throw new Error(
+        `FATAL: ${currentEnv.toUpperCase()} OIDC_JWKS_URI must use HTTPS in deployed environments.`
+      );
+    }
   }
 }
 
@@ -70,8 +87,8 @@ export const env = {
   isDeployedEnv,
   isDevelopment,
   allowDevAuth,
-  corsOrigins: toList(process.env.CORS_ORIGINS).length > 0 
-    ? toList(process.env.CORS_ORIGINS) 
+  corsOrigins: toList(process.env.CORS_ORIGINS).length > 0
+    ? toList(process.env.CORS_ORIGINS)
     : ["http://localhost:5173", "http://localhost:3000"],
   databasePath: process.env.DATABASE_PATH ?? path.join(process.cwd(), "incognito.sqlite"),
   encryptionKey: process.env.ENCRYPTION_KEY ?? (isDeployedEnv ? "" : "dev-only-local-encryption-key-32b!"),
@@ -80,9 +97,11 @@ export const env = {
   oidcIssuerUrl: process.env.OIDC_ISSUER_URL ?? (isDeployedEnv ? "" : "https://login.microsoftonline.com/institutional-tenant/v2.0"),
   oidcClientId: process.env.OIDC_CLIENT_ID ?? (isDeployedEnv ? "" : "incognito-institutional-app-id"),
   oidcJwksUri: process.env.OIDC_JWKS_URI ?? "",
-  oidcAllowedDomains: process.env.OIDC_ALLOWED_DOMAINS 
-    ? toList(process.env.OIDC_ALLOWED_DOMAINS) 
+  oidcAllowedDomains: process.env.OIDC_ALLOWED_DOMAINS
+    ? toList(process.env.OIDC_ALLOWED_DOMAINS)
     : ["university.edu", "campus.ac.in"],
+  pseudonymSecret: process.env.PSEUDONYM_SECRET ?? (isDeployedEnv ? "" : "dev-only-local-secret-do-not-use-in-production-min32"),
+  pseudonymVersion: process.env.PSEUDONYM_VERSION ?? "v1",
   blockchainNetwork: process.env.BLOCKCHAIN_NETWORK ?? "Sepolia Testnet",
   contractAddress: process.env.CONTRACT_ADDRESS ?? "0x742d35Cc6634C0532925a3b844Bc454e4438f44e",
   blockchainRpcUrl: process.env.BLOCKCHAIN_RPC_URL ?? "http://127.0.0.1:8545",

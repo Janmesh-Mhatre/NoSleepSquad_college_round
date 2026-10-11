@@ -3,27 +3,22 @@
 
 ---
 
-## 1. Previous Vulnerabilities Identified
+## 1. Previous Vulnerabilities Identified & Remaining Gaps Closed
 
-During the rigorous security review of Incognito's authentication and institutional identity layers, the following architectural weaknesses and development shortcuts were identified:
+During the thorough security audit and follow-up review of Incognito's authentication and institutional identity layers, the following issues were identified and closed:
 
-1. **Insecure NODE_ENV Checks Allowing Staging Shortcuts**:
-   - Multiple core security boundaries previously checked `if (NODE_ENV !== "production")` or `if (NODE_ENV === "production")`.
-   - Consequently, in `NODE_ENV=staging`, the backend:
-     - Permitted development token issuance (`/api/auth/dev-token`).
-     - Allowed unauthenticated requests to fall back to `"demo-member-01"` or caller-controlled `x-member-ref`, `req.query.ref`, and `req.body.memberRef`.
-     - Allowed reports to be submitted without cryptographic zero-knowledge proofs.
-     - Allowed member revocation without verified administrator authorization.
-     - Seeded mock demo members into storage.
-
-2. **Caller-Controlled Member References on Protected Routes**:
-   - Routes `GET /membership/status`, `POST /membership/enroll`, and `GET /credential/status` accepted caller-supplied identity values when unauthenticated in non-production environments.
-
-3. **Weak OIDC Verification & Hardcoded Fallback Secrets**:
-   - `oidcService.ts` previously relied on manual string splitting (`idToken.split(".")`) and custom HMAC signature verification with a hardcoded fallback secret (`"institutional-oidc-signing-secret-key-32b!"`).
-   - Algorithmic rotation and dynamic JWKS discovery from institutional Identity Providers (`/.well-known/openid-configuration`) were absent.
-   - Deployed environments did not fail closed if OIDC configuration was missing.
-   - Institutional OIDC token verification was not natively integrated into the real `/membership/enroll` and authentication session flows.
+1. **Insecure NODE_ENV Checks & Staging Discrepancies**:
+   - Core security boundaries previously evaluated `if (NODE_ENV !== "production")`. In `NODE_ENV=staging`, developer bypasses, demo members, and unauthenticated routes were previously reachable.
+2. **Internal Session JWT Validation Discrepancy**:
+   - `generateToken` previously omitted the `aud` claim while `verifyToken` accepted missing `iss` and `aud` conditionally. Missing claims could silently bypass strict trust boundaries.
+3. **Hardcoded Pseudonym Salt**:
+   - `oidcService.ts` previously derived member eligibility hashes using a hardcoded public constant salt (`"incognito-institutional-domain-eligibility-salt"`), exposing cross-environment pseudonym predictability.
+4. **Server-Side Semaphore Identity Generation**:
+   - `credentialService.ts` generated Semaphore `Identity` instances server-side when a client commitment was absent, returning `identitySecretExport` in enrollment responses. This violated the core zero-knowledge invariant that the server must never know or transmit member identity secrets.
+5. **OIDC Discovery Metadata & Error Leakage**:
+   - Discovery metadata was not checked for exact issuer equality (`metadata.issuer === issuerUrl`), non-HTTPS endpoints were not rejected in deployed environments, and error handlers leaked expected issuers, audiences, and raw library internals to clients.
+6. **Domain-Only Role Inference**:
+   - Student eligibility was inferred solely from email domain matching without checking authoritative institutional roles/affiliations, allowing ineligible accounts (e.g. guests, alumni, contractors) to enroll.
 
 ---
 
@@ -32,58 +27,62 @@ During the rigorous security review of Incognito's authentication and institutio
 ### Fix 1: Universal Deployed Environment Hardening (Staging = Production)
 - **Unified Environment Capabilities (`backend/config/env.ts`)**:
   - Defined explicit flags: `isProduction`, `isStaging`, `isDeployedEnv = isProduction || isStaging`, `isDevelopment`, and `allowDevAuth`.
-  - Development shortcuts require **two explicit prerequisites**: `isDevelopment` **AND** (`ALLOW_DEV_AUTH=true` || `DEV_AUTH_ENABLED=true`).
+  - Development shortcuts require two explicit prerequisites: `isDevelopment` **AND** (`ALLOW_DEV_AUTH=true` || `DEV_AUTH_ENABLED=true`).
   - Added `assertEnvironmentSecurity()` which runs during application initialization (`createApp()`):
-    - **Fails closed immediately** (throws fatal exception and refuses to start) if `ALLOW_DEV_AUTH` or `DEV_AUTH_ENABLED` is configured in staging or production.
+    - Fails closed immediately if `ALLOW_DEV_AUTH` or `DEV_AUTH_ENABLED` is configured in staging or production.
     - Requires securely injected `AUTH_SECRET` (>= 32 chars, no dev placeholders) in all deployed environments.
     - Requires securely injected `ENCRYPTION_KEY` (>= 32 chars, no dev placeholders) in all deployed environments.
+    - Requires securely injected `PSEUDONYM_SECRET` (>= 32 chars, no dev placeholders) in all deployed environments.
+    - Requires HTTPS for `OIDC_ISSUER_URL` and `OIDC_JWKS_URI` in all deployed environments.
     - Requires `OIDC_ISSUER_URL` and `OIDC_CLIENT_ID` in all deployed environments.
 
-### Fix 2: Complete Elimination of Development Shortcuts in Deployed Environments
-- **`/api/auth/dev-token` Endpoint (`backend/app.ts`)**:
-  - Now strictly checks `isDeployed` and `devAuthAllowed`. If called in staging, production, or in development without explicit `ALLOW_DEV_AUTH=true`, it immediately responds with `403 dev_auth_disabled`.
-- **Membership & Credential Resolution (`backend/routes/membership.ts`, `backend/routes/credential.ts`)**:
-  - `resolveMemberRef(req)` now requires cryptographic authentication (either an internal Bearer JWT or institutional OIDC ID token).
-  - In all deployed environments (`env.isDeployedEnv`), unauthenticated requests **fail closed immediately** with `401 unauthenticated`.
-  - Caller-supplied identifiers (`x-member-ref`, `req.query.ref`, `req.body.memberRef`) and `"demo-member-01"` are completely ignored in staging and production.
-- **Member Revocation Route (`backend/routes/membership.ts`)**:
-  - `POST /membership/revoke` enforces administrator Bearer authentication in all deployed environments (`env.isDeployedEnv`). Unauthenticated requests receive `401`, non-admins receive `403`.
-- **Mandatory ZK Proofs in Staging (`backend/services/reportService.ts`)**:
-  - Report submission now checks `isDeployed`. Submissions without a valid Semaphore Groth16 ZK proof in staging or production are rejected with `400 invalid_proof`.
-- **Database Seeding Isolation (`backend/db.ts`)**:
-  - Seeding of `"demo-member-01"` is strictly isolated to local development when `ALLOW_DEV_AUTH=true` is enabled. It is never executed in staging or production.
-- **Mock Authentication Provider Isolation (`backend/services/authService.ts`)**:
-  - `MockAuthProvider` fails closed and refuses instantiation in all deployed environments (`env.isDeployedEnv`).
+### Fix 2: Strict Internal Session JWT Validation (`backend/services/authService.ts`)
+- **Explicit Constants & Claim Requirements**:
+  - Defined `INTERNAL_JWT_ISSUER = "incognito-auth-service"` and `INTERNAL_JWT_AUDIENCE = "incognito-app"`.
+  - Added `iss` and `aud` to `AuthClaims` and `TokenParams`.
+  - `generateToken()` unconditionally injects `iss: INTERNAL_JWT_ISSUER` and `aud: INTERNAL_JWT_AUDIENCE`.
+  - `verifyToken()` unconditionally requires and verifies both claims:
+    - Missing issuer throws `AuthError("missing_issuer", ..., 401)`.
+    - Mismatched issuer throws `AuthError("invalid_issuer", ..., 401)`.
+    - Missing audience throws `AuthError("missing_audience", ..., 401)`.
+    - Mismatched audience throws `AuthError("invalid_audience", ..., 401)`.
+    - Future `nbf` throws `AuthError("token_not_active", ..., 401)`.
+    - Expired `exp` throws `AuthError("token_expired", ..., 401)`.
+    - Malformed non-JSON payload throws `AuthError("malformed_payload", ..., 401)`.
+    - Tampered HMAC signatures fail constant-time comparison and throw `AuthError("invalid_signature", ..., 401)`.
 
-### Fix 3: Cryptographic Institutional OIDC Verification with `jose`
-- **Replaced Custom Verification with Maintained Standard Library**:
-  - Completely rewritten using `jose` (v6.2.12).
-  - Removed all hardcoded fallback signing secrets and symmetric development defaults.
-  - Deployed environments strictly fail closed if OIDC configuration is absent.
-- **Dynamic Discovery & JWKS Caching with Key Rotation**:
-  - Discovers trusted provider metadata dynamically via `${issuerUrl}/.well-known/openid-configuration` if `jwksUri` is not explicitly set.
-  - Utilizes `jose.createRemoteJWKSet(new URL(jwksUri), { cacheMaxAge: 600000, cooldownDuration: 30000 })`.
-  - Seamlessly handles **signing-key rotation**: when a token arrives with an unknown `kid`, the remote keyset automatically initiates a cache refresh before evaluating.
-- **Strict JWT Verification Boundary**:
-  - Cryptographically verifies RSA / ECDSA signatures against the keyset.
-  - Rejects `alg: "none"`, unsigned tokens, and algorithms outside the institutional allowlist (`["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]`).
-  - Verifies exact issuer (`iss`), client ID audience (`aud`), expiration (`exp`), and not-before (`nbf`).
-- **Institutional Domain & Role Eligibility**:
-  - Validates account domain against configured `allowedEmailDomains`.
-  - Optional `requireEmailVerified` enforcement for IdPs providing email verification claims.
-  - Derives role (`student`, `staff`, `faculty`) from verified institutional claims.
-- **Zero-PII Identity Barrier**:
-  - Derives a deterministic one-way HMAC pseudonym hash: `HMAC-SHA256(salt, domain + ":" + sub)`.
-  - Student names, email addresses, and real student IDs are **never** logged, transmitted, or stored in the membership or reporting pipelines.
+### Fix 3: Secure Pseudonym Secret Management & Versioning (`backend/services/oidcService.ts`, `backend/config/env.ts`)
+- **Removed Hardcoded Salt**:
+  - Removed `"incognito-institutional-domain-eligibility-salt"`.
+  - Securely injects `env.pseudonymSecret` / `process.env.PSEUDONYM_SECRET`.
+  - In deployed environments (staging & production), missing or short (< 32 chars) secrets fail closed during startup and verification.
+  - Implemented versioned derivation: `HMAC-SHA256(secret, version + ":" + domain + ":" + sub)` with `version = "v1"`.
+  - Supports safe key rotation without collision or silent cross-version reference corruption.
 
-### Fix 4: Real OIDC Enrollment & Authentication Flow Integration
-- **`POST /api/auth/oidc/verify`**:
-  - Accepts `{ idToken }` or `Authorization: Bearer <idToken>`.
-  - Performs full cryptographic OIDC verification and eligibility check.
-  - Issues an authenticated member session JWT bound to the anonymous eligibility hash.
-- **`POST /membership/enroll`**:
-  - Accepts institutional OIDC `idToken` directly or an authenticated session token.
-  - Binds the Semaphore client commitment to the verified member record without exposing student PII.
+### Fix 4: Client-Owned Semaphore Identity Architecture (`backend/services/credentialService.ts`, `backend/services/membershipService.ts`, `backend/routes/membership.ts`)
+- **Removed Server-Side Identity Generation**:
+  - Removed `import { Identity }` from `credentialService.ts`.
+  - The client must generate and retain its Semaphore identity secret locally and submit only its public commitment.
+  - Server validates scalar commitment: `isValidSemaphoreCommitment()` enforces scalar range strictly within the BN254 snark scalar field (`0 < commitment < 21888242871839275222246405745257275088548364400416034343698204186575808495617n`).
+  - Missing or malformed commitments on enrollment fail closed with `400 invalid_commitment`.
+  - Completely eliminated `identitySecretExport` from models (`EnrollMemberResponse`), services (`CredentialEnrollmentResult`), and HTTP route responses.
+
+### Fix 5: Authoritative Institutional Eligibility Enforcement (`backend/services/oidcService.ts`)
+- **Authoritative Role Inspection**:
+  - Inspects institutional token claims: `roles`, `role`, `groups`, `affiliation`, `eduPersonAffiliation`, `eduPersonPrimaryAffiliation`.
+  - Explicitly rejects ineligible roles (`guest`, `visitor`, `alumni`, `former_student`, `contractor`, `external`, `suspended`, `inactive`) with `403 ineligible_role`.
+  - Enforces verified email status (`requireEmailVerified`) when required by institutional policy.
+  - Strictly separates institutional identity from anonymous report records and Groth16 zero-knowledge proofs.
+
+### Fix 6: OIDC Discovery, JWKS Validation & Error Sanitization (`backend/services/oidcService.ts`)
+- **Discovery Validation**:
+  - Validates `metadata.issuer === this.config.issuerUrl` (exact match; throws `discovery_issuer_mismatch`).
+  - Requires HTTPS for discovery and JWKS endpoints in all deployed environments.
+  - Rejects malformed metadata or non-HTTPS JWKS URIs (`invalid_jwks_uri`).
+- **Generic Public Errors**:
+  - Error messages across public boundaries are sanitized: zero leaked provider internals, zero leaked expected issuers/audiences, zero stack traces, and generic user-facing messages.
+- **Provider Status Labeling**:
+  - Live external institutional IdP integration is explicitly labeled as **unverified in deployment until configured with production credentials**. Local verification is provided via synthetic in-memory keypairs and ephemeral discovery servers.
 
 ---
 

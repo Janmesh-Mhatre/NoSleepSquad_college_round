@@ -3,6 +3,9 @@ import { env } from "../config/env.js";
 
 export type UserRole = "member" | "moderator" | "admin";
 
+export const INTERNAL_JWT_ISSUER = "incognito-auth-service";
+export const INTERNAL_JWT_AUDIENCE = "incognito-app";
+
 export interface AuthClaims {
   sub: string;
   role: UserRole;
@@ -11,6 +14,7 @@ export interface AuthClaims {
   iat: number;
   exp: number;
   iss: string;
+  aud: string;
 }
 
 export class AuthError extends Error {
@@ -20,9 +24,10 @@ export class AuthError extends Error {
   }
 }
 
-export type TokenParams = Omit<AuthClaims, "iat" | "iss" | "exp"> & {
+export type TokenParams = Omit<AuthClaims, "iat" | "iss" | "aud" | "exp"> & {
   exp?: number;
   expiresInSeconds?: number;
+  aud?: string;
 };
 
 export interface IAuthProvider {
@@ -56,7 +61,8 @@ export class JwtAuthProvider implements IAuthProvider {
       org: params.org || "institutional-authority",
       iat: now,
       exp,
-      iss: "incognito-auth-service",
+      iss: INTERNAL_JWT_ISSUER,
+      aud: params.aud || INTERNAL_JWT_AUDIENCE,
     };
 
     const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
@@ -123,13 +129,19 @@ export class JwtAuthProvider implements IAuthProvider {
       throw new AuthError("invalid_role", "Token role must be member, moderator, or admin.", 401);
     }
 
-    // Verify issuer if present
-    if (claims.iss && claims.iss !== "incognito-auth-service") {
+    // Verify issuer unconditionally
+    if (!claims.iss) {
+      throw new AuthError("missing_issuer", "Token missing required issuer claim.", 401);
+    }
+    if (claims.iss !== INTERNAL_JWT_ISSUER) {
       throw new AuthError("invalid_issuer", "Token issuer is invalid.", 401);
     }
 
-    // Verify audience if present
-    if ((claims as any).aud && (claims as any).aud !== "incognito-app") {
+    // Verify audience unconditionally
+    if (!(claims as any).aud) {
+      throw new AuthError("missing_audience", "Token missing required audience claim.", 401);
+    }
+    if ((claims as any).aud !== INTERNAL_JWT_AUDIENCE) {
       throw new AuthError("invalid_audience", "Token audience is invalid.", 401);
     }
 

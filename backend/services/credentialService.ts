@@ -1,13 +1,33 @@
 import crypto from "node:crypto";
-import { Identity } from "@semaphore-protocol/core";
 import { getDatabase } from "../db.js";
 import type { CredentialRecord } from "../models/membership.js";
 import { zkProofService } from "./zkProofService.js";
 
+export const SNARK_SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+/**
+ * Validates whether a value is a valid Semaphore identity commitment
+ * (a non-zero scalar strictly within the BN254 snark scalar field).
+ */
+export function isValidSemaphoreCommitment(commitment: any): boolean {
+  if (typeof commitment !== "string" && typeof commitment !== "number" && typeof commitment !== "bigint") {
+    return false;
+  }
+  const str = String(commitment).trim();
+  if (!str || !/^[0-9]+$/.test(str)) {
+    return false;
+  }
+  try {
+    const val = BigInt(str);
+    return val > 0n && val < SNARK_SCALAR_FIELD;
+  } catch {
+    return false;
+  }
+}
+
 export interface CredentialEnrollmentResult extends CredentialRecord {
   root?: string;
   leafIndex?: number;
-  identitySecretExport?: string;
 }
 
 export interface CredentialProvider {
@@ -19,28 +39,23 @@ export interface CredentialProvider {
 
 export class LocalCredentialProvider implements CredentialProvider {
   /**
-   * Issues an anonymous Semaphore credential.
-   * If the client provides a commitment, that commitment is registered in the group.
-   * If none is provided, a fresh Semaphore Identity is generated; its commitment is registered,
-   * and its exported secret is returned once to the client (not retained on the server).
+   * Issues an anonymous Semaphore credential using a client-provided public commitment.
+   *
+   * Security Invariants:
+   * 1. The client generates and retains its own Semaphore identity secret.
+   * 2. The server NEVER generates, exports, receives, persists, or transmits identity secrets.
+   * 3. Commitments are strictly validated as valid BN254 scalar field elements.
    */
   createCredential(memberId: string, _memberRef: string, clientCommitment?: string): CredentialEnrollmentResult {
+    if (!clientCommitment || !isValidSemaphoreCommitment(clientCommitment)) {
+      throw new Error("A valid client-owned Semaphore identity commitment is required.");
+    }
+
+    const commitment = String(clientCommitment).trim();
     const db = getDatabase();
     const id = crypto.randomUUID();
     const now = new Date().toISOString();
     const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString();
-
-    let commitment: string;
-    let identitySecretExport: string | undefined;
-
-    if (clientCommitment && typeof clientCommitment === "string") {
-      commitment = clientCommitment.trim();
-    } else {
-      // Generate genuine Semaphore Identity with cryptographically secure randomness
-      const newIdentity = new Identity();
-      commitment = newIdentity.commitment.toString();
-      identitySecretExport = newIdentity.export();
-    }
 
     // Register into the anonymous Semaphore membership tree
     const regResult = zkProofService.registerCommitment(commitment);
@@ -62,7 +77,6 @@ export class LocalCredentialProvider implements CredentialProvider {
       expiresAt,
       root: regResult.root,
       leafIndex: regResult.leafIndex,
-      identitySecretExport,
     };
   }
 

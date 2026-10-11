@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import http from "node:http";
 import * as jose from "jose";
 import { createApp } from "../app.js";
 import { authService, JwtAuthProvider, AuthError } from "../services/authService.js";
@@ -84,6 +85,24 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       assert.throws(
         () => assertEnvironmentSecurity(),
         /FATAL: PRODUCTION requires OIDC_CLIENT_ID to be configured/
+      );
+
+      // 1.5 In production, missing or short PSEUDONYM_SECRET fails closed
+      process.env.NODE_ENV = "production";
+      process.env.OIDC_ISSUER_URL = "https://identity.university.edu";
+      process.env.OIDC_CLIENT_ID = "incognito-app";
+      delete process.env.PSEUDONYM_SECRET;
+      assert.throws(
+        () => assertEnvironmentSecurity(),
+        /FATAL: PRODUCTION requires PSEUDONYM_SECRET to be configured \(min 32 chars\)/
+      );
+
+      // 1.6 In production, non-HTTPS OIDC_ISSUER_URL fails closed
+      process.env.PSEUDONYM_SECRET = "secure-production-pseudonym-secret-min32-chars!";
+      process.env.OIDC_ISSUER_URL = "http://insecure-idp.university.edu";
+      assert.throws(
+        () => assertEnvironmentSecurity(),
+        /FATAL: PRODUCTION OIDC_ISSUER_URL must use HTTPS/
       );
     } finally {
       process.env.NODE_ENV = origEnv;
@@ -331,10 +350,36 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       (err: any) => err instanceof AuthError && err.code === "token_expired"
     );
 
-    // 6.7 Wrong issuer rejected
+    // 6.7 Missing issuer rejected
     const now = Math.floor(Date.now() / 1000);
+    const missingIssPayload = Buffer.from(
+      JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, aud: "incognito-app" })
+    ).toString("base64url");
+    const missingIssSig = crypto
+      .createHmac("sha256", "security-hardening-test-secret-min32ch!")
+      .update(`${parts[0]}.${missingIssPayload}`)
+      .digest("base64url");
+    assert.throws(
+      () => jwtProvider.verifyToken(`${parts[0]}.${missingIssPayload}.${missingIssSig}`),
+      (err: any) => err instanceof AuthError && err.code === "missing_issuer"
+    );
+
+    // 6.8 Missing audience rejected
+    const missingAudPayload = Buffer.from(
+      JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, iss: "incognito-auth-service" })
+    ).toString("base64url");
+    const missingAudSig = crypto
+      .createHmac("sha256", "security-hardening-test-secret-min32ch!")
+      .update(`${parts[0]}.${missingAudPayload}`)
+      .digest("base64url");
+    assert.throws(
+      () => jwtProvider.verifyToken(`${parts[0]}.${missingAudPayload}.${missingAudSig}`),
+      (err: any) => err instanceof AuthError && err.code === "missing_audience"
+    );
+
+    // 6.9 Wrong issuer rejected
     const wrongIssPayload = Buffer.from(
-      JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, iss: "evil-auth-service" })
+      JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, iss: "evil-auth-service", aud: "incognito-app" })
     ).toString("base64url");
     const wrongIssSig = crypto
       .createHmac("sha256", "security-hardening-test-secret-min32ch!")
@@ -345,7 +390,7 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       (err: any) => err instanceof AuthError && err.code === "invalid_issuer"
     );
 
-    // 6.8 Wrong audience rejected
+    // 6.10 Wrong audience rejected
     const wrongAudPayload = Buffer.from(
       JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, iss: "incognito-auth-service", aud: "wrong-app" })
     ).toString("base64url");
@@ -358,9 +403,33 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       (err: any) => err instanceof AuthError && err.code === "invalid_audience"
     );
 
-    // 6.9 Missing required claims fails
+    // 6.11 Future not-before (nbf) rejected
+    const futureNbfPayload = Buffer.from(
+      JSON.stringify({ sub: "u1", role: "member", exp: now + 3600, iss: "incognito-auth-service", aud: "incognito-app", nbf: now + 600 })
+    ).toString("base64url");
+    const futureNbfSig = crypto
+      .createHmac("sha256", "security-hardening-test-secret-min32ch!")
+      .update(`${parts[0]}.${futureNbfPayload}`)
+      .digest("base64url");
+    assert.throws(
+      () => jwtProvider.verifyToken(`${parts[0]}.${futureNbfPayload}.${futureNbfSig}`),
+      (err: any) => err instanceof AuthError && err.code === "token_not_active"
+    );
+
+    // 6.12 Malformed payload (non-JSON base64) rejected
+    const malformedPayloadB64 = Buffer.from("this is definitely not valid json {{{").toString("base64url");
+    const malformedPayloadSig = crypto
+      .createHmac("sha256", "security-hardening-test-secret-min32ch!")
+      .update(`${parts[0]}.${malformedPayloadB64}`)
+      .digest("base64url");
+    assert.throws(
+      () => jwtProvider.verifyToken(`${parts[0]}.${malformedPayloadB64}.${malformedPayloadSig}`),
+      (err: any) => err instanceof AuthError && err.code === "malformed_payload"
+    );
+
+    // 6.13 Missing required claims (sub missing) fails
     const missingSubPayload = Buffer.from(
-      JSON.stringify({ role: "member", exp: now + 3600 })
+      JSON.stringify({ role: "member", exp: now + 3600, iss: "incognito-auth-service", aud: "incognito-app" })
     ).toString("base64url");
     const missingSubSig = crypto
       .createHmac("sha256", "security-hardening-test-secret-min32ch!")
@@ -371,7 +440,7 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       (err: any) => err instanceof AuthError && err.code === "invalid_claims"
     );
 
-    // 6.10 Malformed JWT fails
+    // 6.14 Malformed JWT fails
     assert.throws(
       () => jwtProvider.verifyToken("not-a-valid-jwt"),
       (err: any) => err instanceof AuthError && err.code === "malformed_token"
@@ -475,6 +544,129 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
 
     // Reset resolver to local JWKS
     oidcTestService.setJwksResolver(null);
+
+    // 7.9 Authoritative Ineligible Role rejection (e.g. Guest, Alumni, Contractor)
+    const guestToken = oidcTestService.signToken({
+      ...validOidcPayload,
+      roles: ["Guest"],
+    });
+    await assert.rejects(
+      async () => oidcTestService.verifyInstitutionalToken(guestToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "ineligible_role" && err.status === 403
+    );
+
+    const alumniToken = oidcTestService.signToken({
+      ...validOidcPayload,
+      roles: ["Alumni"],
+    });
+    await assert.rejects(
+      async () => oidcTestService.verifyInstitutionalToken(alumniToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "ineligible_role" && err.status === 403
+    );
+
+    // 7.10 Unverified email rejection when required
+    const strictEmailOidc = new OidcService({
+      issuerUrl: "https://identity.university.edu/v2.0",
+      clientId: "incognito-institutional-app-id",
+      allowedEmailDomains: ["university.edu"],
+      requireEmailVerified: true,
+    });
+    const unverifiedEmailToken = strictEmailOidc.signToken({
+      ...validOidcPayload,
+      email_verified: false,
+    });
+    await assert.rejects(
+      async () => strictEmailOidc.verifyInstitutionalToken(unverifiedEmailToken),
+      (err: any) => err instanceof OidcAuthError && err.code === "unverified_email" && err.status === 403
+    );
+
+    // 7.11 Generic public error messages: NO internal details leaked
+    try {
+      await oidcTestService.verifyInstitutionalToken(wrongIssToken);
+      assert.fail("Should have thrown");
+    } catch (err: any) {
+      assert.strictEqual(err.message, "Institutional token issuer is not recognized.");
+      assert.ok(!err.message.includes("https://identity.university.edu"));
+    }
+
+    try {
+      await oidcTestService.verifyInstitutionalToken(wrongAudToken);
+      assert.fail("Should have thrown");
+    } catch (err: any) {
+      assert.strictEqual(err.message, "Institutional token audience is not valid for this application.");
+      assert.ok(!err.message.includes("incognito-institutional-app-id"));
+    }
+
+    // 7.12 Pseudonym secret changes modify the derived pseudonym hash
+    const serviceSecretA = new OidcService({
+      issuerUrl: "https://identity.university.edu/v2.0",
+      clientId: "incognito-institutional-app-id",
+      allowedEmailDomains: ["university.edu"],
+      pseudonymSecret: "super-secret-institution-salt-alpha-32chars!",
+    });
+    const serviceSecretB = new OidcService({
+      issuerUrl: "https://identity.university.edu/v2.0",
+      clientId: "incognito-institutional-app-id",
+      allowedEmailDomains: ["university.edu"],
+      pseudonymSecret: "super-secret-institution-salt-bravo-32chars!",
+    });
+
+    const tokenA = serviceSecretA.signToken(validOidcPayload);
+    const tokenB = serviceSecretB.signToken(validOidcPayload);
+    const resA = await serviceSecretA.verifyInstitutionalToken(tokenA);
+    const resB = await serviceSecretB.verifyInstitutionalToken(tokenB);
+    assert.notStrictEqual(resA.eligibilityProofHash, resB.eligibilityProofHash, "Different pseudonym secrets must derive different pseudonym hashes");
+    assert.strictEqual(resA.institutionDomain, resB.institutionDomain);
+
+    // 7.13 Missing pseudonym secret in deployed environment fails closed
+    const origEnv = process.env.NODE_ENV;
+    try {
+      process.env.NODE_ENV = "production";
+      assert.throws(
+        () => new OidcService({
+          issuerUrl: "https://identity.university.edu/v2.0",
+          clientId: "incognito-institutional-app-id",
+          pseudonymSecret: "",
+        }),
+        /FATAL: Deployed environment requires PSEUDONYM_SECRET/
+      );
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+
+    // 7.14 Dynamic discovery issuer mismatch fails safely
+    const discoveryServer = http.createServer((req, res) => {
+      if (req.url === "/.well-known/openid-configuration") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          issuer: "https://attacker-spoofed-issuer.com",
+          jwks_uri: "http://127.0.0.1:9999/jwks",
+        }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+
+    await new Promise<void>((resolve) => discoveryServer.listen(0, resolve));
+    const discoveryPort = (discoveryServer.address() as any).port;
+    const discoveryBaseUrl = `http://127.0.0.1:${discoveryPort}`;
+
+    try {
+      const discoveryOidc = new OidcService({
+        issuerUrl: discoveryBaseUrl,
+        clientId: "test-client",
+        allowedEmailDomains: ["university.edu"],
+        enableDiscovery: true,
+      });
+
+      await assert.rejects(
+        async () => discoveryOidc.verifyInstitutionalToken(validToken),
+        (err: any) => err instanceof OidcAuthError && err.code === "discovery_issuer_mismatch" && err.status === 503
+      );
+    } finally {
+      discoveryServer.close();
+    }
   });
 
   // =========================================================================
@@ -516,18 +708,20 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
 
       // 8.3 Directly enroll with institutional ID token in POST /membership/enroll
       const clientIdentity = new Identity();
+      const clientCommitment = clientIdentity.commitment.toString();
       const enrollRes = await fetch(`${baseUrl}/api/membership/enroll`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           idToken: institutionalIdToken,
-          commitment: clientIdentity.commitment.toString(),
+          commitment: clientCommitment,
         }),
       });
       assert.strictEqual(enrollRes.status, 201, "Enrollment with genuine OIDC token must succeed with 201");
       const enrollData = await enrollRes.json() as any;
       assert.strictEqual(enrollData.membership?.status, "active");
       assert.strictEqual(enrollData.credential?.status, "registered");
+      assert.strictEqual(enrollData.credential?.commitment, clientCommitment);
 
       // 8.4 Enrolled user queries credential status with session token
       const credRes = await fetch(`${baseUrl}/api/credential/status`, {
@@ -564,6 +758,75 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
       // 8.6 Verify identity lookup is architecturally forbidden
       const identityLookupRes = await fetch(`${baseUrl}/api/reports/${reportData.id}/identity`);
       assert.strictEqual(identityLookupRes.status, 403, "Identity lookup must be strictly prohibited with 403");
+
+      // 8.7 Enrollment without client commitment fails with 400 invalid_commitment
+      const noCommitmentRes = await fetch(`${baseUrl}/api/membership/enroll`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: institutionalIdToken }),
+      });
+      assert.strictEqual(noCommitmentRes.status, 400);
+      const noCommitmentData = await noCommitmentRes.json() as any;
+      assert.strictEqual(noCommitmentData.error, "invalid_commitment");
+
+      // 8.8 Enrollment with malformed / non-scalar commitment fails with 400
+      const malformedCommitmentRes = await fetch(`${baseUrl}/api/membership/enroll`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idToken: institutionalIdToken,
+          commitment: "not-a-valid-commitment-scalar",
+        }),
+      });
+      assert.strictEqual(malformedCommitmentRes.status, 400);
+      const malformedCommitmentData = await malformedCommitmentRes.json() as any;
+      assert.strictEqual(malformedCommitmentData.error, "invalid_commitment");
+
+      // 8.9 Enrollment with scalar exceeding SNARK_SCALAR_FIELD fails with 400
+      const outOfBoundsScalar = "21888242871839275222246405745257275088548364400416034343698204186575808495618";
+      const outOfBoundsRes = await fetch(`${baseUrl}/api/membership/enroll`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idToken: institutionalIdToken,
+          commitment: outOfBoundsScalar,
+        }),
+      });
+      assert.strictEqual(outOfBoundsRes.status, 400);
+
+      // 8.10 Enrollment response NEVER contains identitySecretExport
+      assert.strictEqual(enrollData.credential?.identitySecretExport, undefined);
+      assert.ok(!JSON.stringify(enrollData).includes("identitySecretExport"));
+
+      // 8.11 OIDC verification with ineligible role returns 403
+      const guestIdToken = oidcService.signToken({
+        ...oidcPayload,
+        sub: `guest-${crypto.randomUUID()}`,
+        roles: ["Guest"],
+      });
+      const guestVerifyRes = await fetch(`${baseUrl}/api/auth/oidc/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: guestIdToken }),
+      });
+      assert.strictEqual(guestVerifyRes.status, 403);
+      const guestVerifyData = await guestVerifyRes.json() as any;
+      assert.strictEqual(guestVerifyData.error, "ineligible_role");
+
+      // 8.12 OIDC verification with unauthorized domain returns 403
+      const foreignIdToken = oidcService.signToken({
+        ...oidcPayload,
+        sub: `foreign-${crypto.randomUUID()}`,
+        email: "attacker@unauthorized-external-campus.com",
+      });
+      const foreignVerifyRes = await fetch(`${baseUrl}/api/auth/oidc/verify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idToken: foreignIdToken }),
+      });
+      assert.strictEqual(foreignVerifyRes.status, 403);
+      const foreignVerifyData = await foreignVerifyRes.json() as any;
+      assert.strictEqual(foreignVerifyData.error, "unauthorized_domain");
     });
   });
 });

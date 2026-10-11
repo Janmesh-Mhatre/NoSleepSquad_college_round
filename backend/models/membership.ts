@@ -43,7 +43,6 @@ export interface EnrollMemberResponse {
     createdAt: string;
     expiresAt: string;
     commitment?: string;
-    identitySecretExport?: string;
     root?: string;
   };
 }

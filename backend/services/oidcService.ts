@@ -9,6 +9,9 @@ export interface OidcConfig {
   allowedEmailDomains: string[];
   allowedAlgorithms?: string[];
   requireEmailVerified?: boolean;
+  pseudonymSecret?: string;
+  pseudonymVersion?: string;
+  enableDiscovery?: boolean;
 }
 
 export interface VerifiedInstitutionalIdentity {
@@ -55,19 +58,30 @@ export class OidcService {
     const issuerUrl = customConfig?.issuerUrl || process.env.OIDC_ISSUER_URL || (isDeployed ? "" : "https://login.microsoftonline.com/institutional-tenant/v2.0");
     const clientId = customConfig?.clientId || process.env.OIDC_CLIENT_ID || (isDeployed ? "" : "incognito-institutional-app-id");
     const jwksUri = customConfig?.jwksUri || process.env.OIDC_JWKS_URI || undefined;
+    const pseudonymSecret = customConfig?.pseudonymSecret || env.pseudonymSecret || process.env.PSEUDONYM_SECRET || "";
+    const pseudonymVersion = customConfig?.pseudonymVersion || env.pseudonymVersion || process.env.PSEUDONYM_VERSION || "v1";
 
     if (isDeployed) {
       if (!issuerUrl || !issuerUrl.trim()) {
         throw new Error("FATAL: Deployed environment requires OIDC_ISSUER_URL to be configured.");
       }
+      if (!issuerUrl.startsWith("https://")) {
+        throw new Error("FATAL: OIDC_ISSUER_URL must use HTTPS in deployed environments.");
+      }
       if (!clientId || !clientId.trim()) {
         throw new Error("FATAL: Deployed environment requires OIDC_CLIENT_ID to be configured.");
       }
+      if (jwksUri && !jwksUri.startsWith("https://")) {
+        throw new Error("FATAL: OIDC_JWKS_URI must use HTTPS in deployed environments.");
+      }
+      if (!pseudonymSecret || pseudonymSecret.length < 32 || pseudonymSecret.includes("dev-only")) {
+        throw new Error("FATAL: Deployed environment requires PSEUDONYM_SECRET to be configured (min 32 chars).");
+      }
     }
 
-    const allowedEmailDomains = customConfig?.allowedEmailDomains || 
-      (process.env.OIDC_ALLOWED_DOMAINS 
-        ? process.env.OIDC_ALLOWED_DOMAINS.split(",").map((d) => d.trim()).filter(Boolean) 
+    const allowedEmailDomains = customConfig?.allowedEmailDomains ||
+      (process.env.OIDC_ALLOWED_DOMAINS
+        ? process.env.OIDC_ALLOWED_DOMAINS.split(",").map((d) => d.trim()).filter(Boolean)
         : ["university.edu", "campus.ac.in"]);
 
     this.config = {
@@ -77,6 +91,9 @@ export class OidcService {
       allowedEmailDomains,
       allowedAlgorithms: customConfig?.allowedAlgorithms || ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"],
       requireEmailVerified: customConfig?.requireEmailVerified ?? false,
+      pseudonymSecret,
+      pseudonymVersion,
+      enableDiscovery: customConfig?.enableDiscovery ?? isDeployed,
     };
 
     // If jwksUri is provided, pre-configure remote JWKSet with key rotation caching
@@ -203,7 +220,7 @@ export class OidcService {
       return this.customResolver;
     }
 
-    if (this.localJWKSet) {
+    if (!this.config.enableDiscovery && this.localJWKSet) {
       return this.localJWKSet;
     }
 
@@ -211,11 +228,16 @@ export class OidcService {
       return this.remoteJWKSet;
     }
 
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+
     // Dynamic OIDC Discovery if jwksUri not explicitly provided
     let jwksUri = this.config.jwksUri;
     if (!jwksUri) {
       if (!this.config.issuerUrl) {
         throw new OidcAuthError("missing_configuration", "OIDC issuer URL is required for JWKS discovery.", 500);
+      }
+      if (isDeployed && !this.config.issuerUrl.startsWith("https://")) {
+        throw new OidcAuthError("invalid_discovery_url", "OIDC discovery requires HTTPS in deployed environments.", 500);
       }
       try {
         const discoveryUrl = `${this.config.issuerUrl.replace(/\/$/, "")}/.well-known/openid-configuration`;
@@ -223,16 +245,33 @@ export class OidcService {
         if (!res.ok) {
           throw new Error(`Discovery endpoint returned HTTP ${res.status}`);
         }
-        const metadata = (await res.json()) as { jwks_uri?: string };
+        const metadata = (await res.json()) as { issuer?: string; jwks_uri?: string };
+        if (!metadata || typeof metadata !== "object") {
+          throw new OidcAuthError("invalid_discovery_metadata", "Institutional identity provider discovery metadata is malformed.", 503);
+        }
+        if (!metadata.issuer || metadata.issuer !== this.config.issuerUrl) {
+          throw new OidcAuthError("discovery_issuer_mismatch", "Institutional identity provider discovery issuer mismatch.", 503);
+        }
         if (!metadata.jwks_uri || typeof metadata.jwks_uri !== "string") {
-          throw new Error("Discovery metadata missing 'jwks_uri'");
+          throw new OidcAuthError("invalid_jwks_uri", "Institutional identity provider JWKS endpoint is unsafe or invalid.", 503);
+        }
+        try {
+          const parsed = new URL(metadata.jwks_uri);
+          if (isDeployed && parsed.protocol !== "https:") {
+            throw new Error("JWKS endpoint must use HTTPS in deployed environments.");
+          }
+        } catch {
+          throw new OidcAuthError("invalid_jwks_uri", "Institutional identity provider JWKS endpoint is unsafe or invalid.", 503);
         }
         jwksUri = metadata.jwks_uri;
         this.config.jwksUri = jwksUri;
       } catch (err: any) {
+        if (err instanceof OidcAuthError) {
+          throw err;
+        }
         throw new OidcAuthError(
           "provider_unavailable",
-          `Institutional OIDC discovery failed: ${err?.message || "Endpoint unavailable"}`,
+          "Institutional identity provider is currently unavailable.",
           503
         );
       }
@@ -244,8 +283,8 @@ export class OidcService {
         cooldownDuration: 30 * 1000,
       });
       return this.remoteJWKSet;
-    } catch (err: any) {
-      throw new OidcAuthError("provider_unavailable", `Failed to initialize JWKS endpoint: ${err?.message}`, 503);
+    } catch {
+      throw new OidcAuthError("provider_unavailable", "Institutional identity provider is currently unavailable.", 503);
     }
   }
 
@@ -313,19 +352,19 @@ export class OidcService {
       const errMsg = err?.message || "";
 
       if (errCode === "ERR_JWT_EXPIRED") {
-        throw new OidcAuthError("token_expired", "Institutional OIDC token has expired.", 401);
+        throw new OidcAuthError("token_expired", "Institutional token has expired.", 401);
       }
       if (errCode === "ERR_JWT_CLAIM_VALIDATION_FAILED") {
         if (err.claim === "iss") {
-          throw new OidcAuthError("invalid_issuer", `OIDC issuer mismatch. Expected '${this.config.issuerUrl}'.`, 401);
+          throw new OidcAuthError("invalid_issuer", "Institutional token issuer is not recognized.", 401);
         }
         if (err.claim === "aud") {
-          throw new OidcAuthError("invalid_audience", `OIDC audience mismatch. Expected '${this.config.clientId}'.`, 401);
+          throw new OidcAuthError("invalid_audience", "Institutional token audience is not valid for this application.", 401);
         }
         if (err.claim === "nbf") {
-          throw new OidcAuthError("token_not_active", "Institutional OIDC token is not yet active.", 401);
+          throw new OidcAuthError("token_not_active", "Institutional token is not yet active.", 401);
         }
-        throw new OidcAuthError("invalid_claim", `OIDC claim validation failed: ${err.claim}`, 401);
+        throw new OidcAuthError("invalid_claim", "Institutional token claim validation failed.", 401);
       }
       if (errCode === "ERR_JWS_SIGNATURE_VERIFICATION_FAILED") {
         throw new OidcAuthError("invalid_signature", "Cryptographic signature validation failed.", 401);
@@ -340,14 +379,14 @@ export class OidcService {
         throw new OidcAuthError("unsupported_algorithm", "Unsupported signing algorithm.", 401);
       }
       if (errCode === "ERR_JWKS_TIMEOUT" || errMsg.includes("fetch failed") || errMsg.includes("unavailable")) {
-        throw new OidcAuthError("provider_unavailable", "Institutional identity provider JWKS endpoint is unavailable.", 503);
+        throw new OidcAuthError("provider_unavailable", "Institutional identity provider is currently unavailable.", 503);
       }
-      throw new OidcAuthError("invalid_token", `Cryptographic verification failed: ${errMsg}`, 401);
+      throw new OidcAuthError("invalid_token", "Cryptographic token verification failed.", 401);
     }
 
     // 3. Inspect Required Claims
     if (!verifiedPayload.sub) {
-      throw new OidcAuthError("missing_subject", "OIDC token missing required 'sub' claim.", 401);
+      throw new OidcAuthError("missing_subject", "Institutional token missing required subject claim.", 401);
     }
 
     // 4. Verify Email Verification Status (if required by policy or present)
@@ -369,30 +408,67 @@ export class OidcService {
     );
 
     if (!isAllowedDomain) {
-      throw new OidcAuthError("unauthorized_domain", `Account domain '@${domain}' is not authorized for this institution.`, 403);
+      throw new OidcAuthError("unauthorized_domain", "Account institutional domain is not authorized.", 403);
     }
 
-    // 6. Determine Institutional Role
-    let role: "student" | "staff" | "faculty" = "student";
-    const roles: string[] = Array.isArray(verifiedPayload.roles)
-      ? (verifiedPayload.roles as string[])
+    // 6. Determine Institutional Role and Validate Authoritative Eligibility Claims
+    const rawRoles = Array.isArray(verifiedPayload.roles)
+      ? verifiedPayload.roles
       : typeof verifiedPayload.role === "string"
       ? [verifiedPayload.role]
+      : Array.isArray(verifiedPayload.groups)
+      ? verifiedPayload.groups
       : [];
-    const affiliation = String(verifiedPayload.affiliation || "").toLowerCase();
+    const rawAffiliation = Array.isArray(verifiedPayload.affiliation)
+      ? verifiedPayload.affiliation
+      : typeof verifiedPayload.affiliation === "string"
+      ? [verifiedPayload.affiliation]
+      : [];
+    const allRoleIndicators = [
+      ...rawRoles,
+      ...rawAffiliation,
+      (verifiedPayload as any).eduPersonAffiliation,
+      (verifiedPayload as any).eduPersonPrimaryAffiliation,
+    ]
+      .filter(Boolean)
+      .map((r: any) => String(r).toLowerCase().trim());
 
-    if (roles.some((r) => r.toLowerCase() === "faculty") || affiliation === "faculty") {
+    // Ineligible authoritative claims must fail closed
+    const ineligibleRoles = ["guest", "visitor", "alumni", "former_student", "contractor", "external", "suspended", "inactive"];
+    const hasIneligible = allRoleIndicators.some((r) => ineligibleRoles.includes(r));
+    if (hasIneligible) {
+      throw new OidcAuthError("ineligible_role", "Account institutional role is not eligible for reporting.", 403);
+    }
+
+    // If explicit institutional roles are defined but none correspond to eligible educational roles
+    const eligibleRoleKeywords = ["student", "learner", "undergrad", "graduate", "staff", "faculty", "professor", "instructor", "teacher", "employee", "admin", "member"];
+    if (allRoleIndicators.length > 0 && !allRoleIndicators.some((r) => eligibleRoleKeywords.some((k) => r.includes(k)))) {
+      throw new OidcAuthError("ineligible_role", "Account institutional role is not eligible for reporting.", 403);
+    }
+
+    let role: "student" | "staff" | "faculty" = "student";
+    if (allRoleIndicators.some((r) => r.includes("faculty") || r.includes("professor") || r.includes("instructor") || r.includes("teacher"))) {
       role = "faculty";
-    } else if (roles.some((r) => r.toLowerCase() === "staff") || affiliation === "staff") {
+    } else if (allRoleIndicators.some((r) => r.includes("staff") || r.includes("employee") || r.includes("admin"))) {
       role = "staff";
     }
 
     // 7. Strict Privacy & Identity Separation:
     // Generate deterministic one-way HMAC pseudonym hash proving institutional eligibility
-    // without ever storing, transmitting, or logging student PII, name, or student ID.
+    // using securely injected secret and versioning without storing or leaking student PII.
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    const pseudonymSecret = this.config.pseudonymSecret || env.pseudonymSecret || process.env.PSEUDONYM_SECRET;
+    if (!pseudonymSecret || (isDeployed && (pseudonymSecret.length < 32 || pseudonymSecret.includes("dev-only")))) {
+      if (isDeployed) {
+        throw new OidcAuthError("missing_configuration", "Pseudonym derivation secret is unconfigured or insecure.", 500);
+      }
+    }
+    const secret = pseudonymSecret || "dev-only-local-secret-do-not-use-in-production-min32";
+    const version = this.config.pseudonymVersion || env.pseudonymVersion || "v1";
+
     const eligibilityProofHash = crypto
-      .createHmac("sha256", "incognito-institutional-domain-eligibility-salt")
-      .update(`${domain}:${verifiedPayload.sub}`)
+      .createHmac("sha256", secret)
+      .update(`${version}:${domain}:${verifiedPayload.sub}`)
       .digest("hex");
 
     return {

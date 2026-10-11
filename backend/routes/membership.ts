@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import { membershipService, MembershipError } from "../services/membershipService.js";
 import { authService, AuthError } from "../services/authService.js";
 import { oidcService } from "../services/oidcService.js";
+import { isValidSemaphoreCommitment } from "../services/credentialService.js";
 import { env } from "../config/env.js";
 
 export const membershipRouter = Router();
@@ -97,6 +98,12 @@ membershipRouter.post("/membership/enroll", async (req, res, next) => {
       });
     }
     const clientCommitment = req.body?.commitment;
+    if (!clientCommitment || typeof clientCommitment !== "string" || !isValidSemaphoreCommitment(clientCommitment)) {
+      return res.status(400).json({
+        error: "invalid_commitment",
+        message: "A valid client-owned Semaphore identity commitment is required.",
+      });
+    }
     const result = membershipService.enroll(memberRef, clientCommitment);
     return res.status(201).json(result);
   } catch (err) {

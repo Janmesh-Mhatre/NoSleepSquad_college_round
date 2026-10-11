@@ -11,6 +11,7 @@ import { getHealth } from "../services/healthService.js";
 import { createRateLimiter } from "../middleware/rateLimiter.js";
 import { requireRole } from "../middleware/auth.js";
 import { authService } from "../services/authService.js";
+import { Identity } from "@semaphore-protocol/core";
 
 test("Incognito Backend Architecture & Security Test Suite", async (t) => {
   const membershipService = new SqliteMembershipService();
@@ -30,22 +31,32 @@ test("Incognito Backend Architecture & Security Test Suite", async (t) => {
 
   await t.test("2. Membership & Credential Lifecycle", () => {
     const memberRef = "test-unit-member-" + Date.now();
-    
+    const clientIdentity = new Identity();
+    const clientCommitment = clientIdentity.commitment.toString();
+
+    // Enrollment without client commitment fails with invalid_commitment
+    assert.throws(
+      () => membershipService.enroll(memberRef),
+      (err: any) => err instanceof MembershipError && err.code === "invalid_commitment"
+    );
+
     // Status before enroll
     const statusPre = membershipService.getStatus(memberRef);
     assert.equal(statusPre.registered, false);
     assert.equal(statusPre.status, "not_registered");
 
-    // Enroll
-    const enrolled = membershipService.enroll(memberRef);
+    // Enroll with valid client commitment
+    const enrolled = membershipService.enroll(memberRef, clientCommitment);
     assert.equal(enrolled.success, true);
     assert.equal(enrolled.membership.status, "active");
     assert.equal(enrolled.credential.status, "registered");
     assert.ok(enrolled.credential.commitmentReference.length > 0);
+    assert.equal(enrolled.credential.commitment, clientCommitment);
+    assert.equal((enrolled.credential as any).identitySecretExport, undefined);
 
     // Duplicate enrollment rejected
     assert.throws(
-      () => membershipService.enroll(memberRef),
+      () => membershipService.enroll(memberRef, clientCommitment),
       (err: any) => err instanceof MembershipError && err.status === 409
     );
 
@@ -200,7 +211,7 @@ test("Incognito Backend Architecture & Security Test Suite", async (t) => {
     let status = 200;
     let responseBody: any = null;
     const mockRes: any = {
-      setHeader: () => {},
+      setHeader: () => { },
       status: (code: number) => {
         status = code;
         return {

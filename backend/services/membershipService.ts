@@ -7,7 +7,7 @@ import type {
   RevokeMemberResponse,
   ValidateMemberResponse,
 } from "../models/membership.js";
-import { credentialProvider } from "./credentialService.js";
+import { credentialProvider, isValidSemaphoreCommitment } from "./credentialService.js";
 
 export class MembershipError extends Error {
   constructor(public code: string, message: string, public status: number = 400) {
@@ -79,6 +79,14 @@ export class SqliteMembershipService implements MembershipService {
       throw new MembershipError("invalid_request", "Member reference is required", 400);
     }
 
+    if (!clientCommitment || !isValidSemaphoreCommitment(clientCommitment)) {
+      throw new MembershipError(
+        "invalid_commitment",
+        "A valid client-owned Semaphore identity commitment is required for enrollment.",
+        400
+      );
+    }
+
     const existing = this.getMemberByRef(sanitizedRef);
     if (existing) {
       throw new MembershipError("duplicate_enrollment", "Member is already enrolled", 409);
@@ -110,7 +118,6 @@ export class SqliteMembershipService implements MembershipService {
         createdAt: cred.createdAt,
         expiresAt: cred.expiresAt || "",
         commitment: cred.commitment,
-        identitySecretExport: cred.identitySecretExport,
         root: cred.root,
       },
     };
