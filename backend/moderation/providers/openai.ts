@@ -10,14 +10,25 @@ export class OpenAIModerationProvider extends BaseModerationProvider {
   readonly name = "openai";
   readonly modelVersion: string;
   private apiKey: string;
+  private endpoint: string;
   private timeoutMs: number;
   private maxRetries: number;
 
-  constructor(options?: ModerationProviderOptions) {
+  constructor(options?: ModerationProviderOptions & { endpoint?: string }) {
     super();
-    this.apiKey = options?.apiKey || process.env.OPENAI_API_KEY || "";
-    this.modelVersion = options?.model || process.env.OPENAI_MODEL || "gpt-4o-mini";
-    this.timeoutMs = options?.timeoutMs || 3500;
+    this.apiKey = options?.apiKey || process.env.GROQ_API_KEY || process.env.OPENAI_API_KEY || "";
+    let model = options?.model || process.env.GROQ_MODEL || process.env.OPENAI_MODEL || "gpt-4o-mini";
+    if (model.toLowerCase() === "gpt oss" || model.toLowerCase() === "gpt-oss") {
+      model = "openai/gpt-oss-20b";
+    }
+    this.modelVersion = model;
+    this.endpoint =
+      options?.endpoint ||
+      process.env.GROQ_BASE_URL ||
+      (this.apiKey.startsWith("gsk_")
+        ? "https://api.groq.com/openai/v1/chat/completions"
+        : process.env.OPENAI_BASE_URL || "https://api.openai.com/v1/chat/completions");
+    this.timeoutMs = options?.timeoutMs || 4500;
     this.maxRetries = options?.maxRetries || 2;
   }
 
@@ -27,7 +38,7 @@ export class OpenAIModerationProvider extends BaseModerationProvider {
 
   async moderate(rawText: string, categoryId: string): Promise<ModerationResultSchema> {
     if (!this.apiKey) {
-      throw new Error("OPENAI_CONFIG_ERROR: No OpenAI API key configured.");
+      throw new Error("OPENAI_CONFIG_ERROR: No OpenAI or Groq API key configured.");
     }
 
     const scrubbed = textNormalizer.scrubPII(rawText);
@@ -49,7 +60,7 @@ You must return ONLY a JSON object matching:
   "urgencyScore": number between 0 and 100
 }`;
 
-    const endpoint = "https://api.openai.com/v1/chat/completions";
+    const endpoint = this.endpoint;
 
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {

@@ -19,7 +19,8 @@ export class ModerationPipeline {
   }
 
   configureFromEnvironment() {
-    const providerName = (process.env.LLM_PROVIDER || "deterministic").toLowerCase() as ModerationProviderType;
+    const defaultProvider = process.env.GROQ_API_KEY ? "openai" : "deterministic";
+    const providerName = (process.env.LLM_PROVIDER || defaultProvider).toLowerCase() as ModerationProviderType;
     this.activeProviderType = providerName;
 
     switch (providerName) {
