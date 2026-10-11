@@ -67,6 +67,27 @@ export function createApp() {
     return res.json({ token, role, sub });
   });
 
+  // Dedicated Development/Test moderator token endpoint (strictly development-only, requires explicit ALLOW_DEV_AUTH=true)
+  app.post("/api/auth/dev-moderator-token", (req, res) => {
+    const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
+    const currentEnv = (process.env.NODE_ENV || "development").toLowerCase();
+    const isDev = currentEnv === "development" || currentEnv === "test";
+    const devAuthAllowed = isDev && (process.env.ALLOW_DEV_AUTH === "true" || process.env.DEV_AUTH_ENABLED === "true");
+
+    if (isDeployed || !devAuthAllowed) {
+      return res.status(403).json({
+        error: "dev_auth_disabled",
+        message: "Development authentication endpoints are strictly prohibited in deployed environments and require explicit ALLOW_DEV_AUTH=true in development.",
+      });
+    }
+
+    const sub = typeof req.body?.sub === "string" && req.body.sub.trim() ? req.body.sub.trim() : "dev-moderator-01";
+    // Role is strictly hardcoded to "moderator" server-side. Caller-supplied role is ignored.
+    const role: "moderator" = "moderator";
+    const token = authService.generateToken({ sub, role });
+    return res.json({ token, role, sub });
+  });
+
   // Institutional OIDC Token Verification & Session Issuance endpoint
   app.post("/api/auth/oidc/verify", async (req, res) => {
     try {

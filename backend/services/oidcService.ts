@@ -55,11 +55,11 @@ export class OidcService {
   constructor(customConfig?: Partial<OidcConfig>) {
     const isDeployed = env.isDeployedEnv || process.env.NODE_ENV === "production" || process.env.NODE_ENV === "staging";
 
-    const issuerUrl = customConfig?.issuerUrl || process.env.OIDC_ISSUER_URL || (isDeployed ? "" : "https://login.microsoftonline.com/institutional-tenant/v2.0");
-    const clientId = customConfig?.clientId || process.env.OIDC_CLIENT_ID || (isDeployed ? "" : "incognito-institutional-app-id");
-    const jwksUri = customConfig?.jwksUri || process.env.OIDC_JWKS_URI || undefined;
-    const pseudonymSecret = customConfig?.pseudonymSecret || env.pseudonymSecret || process.env.PSEUDONYM_SECRET || "";
-    const pseudonymVersion = customConfig?.pseudonymVersion || env.pseudonymVersion || process.env.PSEUDONYM_VERSION || "v1";
+    const issuerUrl = customConfig?.issuerUrl !== undefined ? customConfig.issuerUrl : (process.env.OIDC_ISSUER_URL || (isDeployed ? "" : "https://login.microsoftonline.com/institutional-tenant/v2.0"));
+    const clientId = customConfig?.clientId !== undefined ? customConfig.clientId : (process.env.OIDC_CLIENT_ID || (isDeployed ? "" : "incognito-institutional-app-id"));
+    const jwksUri = customConfig?.jwksUri !== undefined ? customConfig.jwksUri : (process.env.OIDC_JWKS_URI || undefined);
+    const pseudonymSecret = customConfig?.pseudonymSecret !== undefined ? customConfig.pseudonymSecret : (process.env.PSEUDONYM_SECRET || env.pseudonymSecret || "");
+    const pseudonymVersion = customConfig?.pseudonymVersion !== undefined ? customConfig.pseudonymVersion : (process.env.PSEUDONYM_VERSION || env.pseudonymVersion || "v1");
 
     if (isDeployed) {
       if (!issuerUrl || !issuerUrl.trim()) {

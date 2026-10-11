@@ -1,4 +1,13 @@
 import path from "node:path";
+import process from "node:process";
+
+if (typeof (process as any).loadEnvFile === "function") {
+  try {
+    (process as any).loadEnvFile();
+  } catch {
+    // .env file is optional
+  }
+}
 
 const toInt = (value: string | undefined, fallback: number): number => {
   const parsed = Number.parseInt(value ?? "", 10);

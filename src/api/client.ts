@@ -23,25 +23,97 @@ const MESSAGES: Record<string, string> = {
   unknown: "The request failed. Please check parameters and try again.",
 };
 
+// Moderator Token Management for Local Development Demo
+let moderatorToken: string | null = null;
+
+export function getModeratorToken(): string | null {
+  if (moderatorToken) return moderatorToken;
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    moderatorToken = sessionStorage.getItem("incognito_dev_mod_token");
+  }
+  return moderatorToken;
+}
+
+export function setModeratorToken(token: string | null): void {
+  moderatorToken = token;
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    if (token) {
+      sessionStorage.setItem("incognito_dev_mod_token", token);
+    } else {
+      sessionStorage.removeItem("incognito_dev_mod_token");
+    }
+  }
+}
+
+export async function fetchDevModeratorToken(): Promise<string | null> {
+  try {
+    const url = BASE ? `${BASE}/api/auth/dev-moderator-token` : "/api/auth/dev-moderator-token";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sub: "dev-moderator-01" }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.token) {
+      setModeratorToken(data.token);
+      return data.token;
+    }
+  } catch {
+    // Network or dev auth unavailable
+  }
+  return null;
+}
+
 export async function request<T>(
   path: string,
   init: { method?: string; body?: unknown; idempotencyKey?: string } = {}
 ): Promise<T> {
   const url = BASE ? `${BASE}${path}` : path;
+  let token: string | null = null;
+
+  if (path.startsWith("/api/moderator") || path.startsWith("/api/audit") || path.startsWith("/api/security")) {
+    token = getModeratorToken();
+    if (!token) {
+      token = await fetchDevModeratorToken();
+    }
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+
   let res: Response;
 
   try {
     res = await fetch(url, {
       method: init.method ?? "GET",
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(init.idempotencyKey ? { "Idempotency-Key": init.idempotencyKey } : {}),
-      },
+      headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     });
   } catch {
     throw new ApiError("network", MESSAGES.network);
+  }
+
+  // If a 401 unauthenticated response is returned on a moderator route, try refreshing the token once
+  if (res.status === 401 && (path.startsWith("/api/moderator") || path.startsWith("/api/audit") || path.startsWith("/api/security"))) {
+    const freshToken = await fetchDevModeratorToken();
+    if (freshToken) {
+      headers["Authorization"] = `Bearer ${freshToken}`;
+      try {
+        res = await fetch(url, {
+          method: init.method ?? "GET",
+          credentials: "include",
+          headers,
+          body: init.body === undefined ? undefined : JSON.stringify(init.body),
+        });
+      } catch {
+        throw new ApiError("network", MESSAGES.network);
+      }
+    }
   }
 
   if (!res.ok) {

@@ -174,6 +174,69 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
         });
         assert.strictEqual(res.status, 403);
       });
+
+      // 2.5 Dedicated dev moderator token: works in dev + ALLOW_DEV_AUTH=true, server hardcodes role="moderator", caller cannot choose admin
+      process.env.NODE_ENV = "development";
+      process.env.ALLOW_DEV_AUTH = "true";
+      await withServer(app, async (baseUrl) => {
+        // Normal request
+        const res = await fetch(`${baseUrl}/api/auth/dev-moderator-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sub: "dev-moderator-01" }),
+        });
+        assert.strictEqual(res.status, 200);
+        const data = await res.json() as any;
+        assert.ok(data.token);
+        assert.strictEqual(data.role, "moderator");
+        assert.strictEqual(data.sub, "dev-moderator-01");
+
+        // Token works against protected moderator route
+        const modRes = await fetch(`${baseUrl}/api/moderator/metrics`, {
+          headers: { Authorization: `Bearer ${data.token}` },
+        });
+        assert.strictEqual(modRes.status, 200);
+
+        // Caller cannot choose admin role
+        const hijackRes = await fetch(`${baseUrl}/api/auth/dev-moderator-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sub: "attacker", role: "admin" }),
+        });
+        assert.strictEqual(hijackRes.status, 200);
+        const hijackData = await hijackRes.json() as any;
+        assert.strictEqual(hijackData.role, "moderator", "Server must strictly hardcode role to moderator");
+
+        // Verified token cannot access admin routes
+        const adminRes = await fetch(`${baseUrl}/api/security/posture`, {
+          headers: { Authorization: `Bearer ${hijackData.token}` },
+        });
+        assert.strictEqual(adminRes.status, 403, "Moderator token cannot access admin routes");
+      });
+
+      // 2.6 Dev moderator token FAILS with 403 in staging
+      process.env.NODE_ENV = "staging";
+      process.env.ALLOW_DEV_AUTH = "false";
+      await withServer(app, async (baseUrl) => {
+        const res = await fetch(`${baseUrl}/api/auth/dev-moderator-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sub: "dev-moderator-01" }),
+        });
+        assert.strictEqual(res.status, 403);
+      });
+
+      // 2.7 Dev moderator token FAILS with 403 in production
+      process.env.NODE_ENV = "production";
+      process.env.ALLOW_DEV_AUTH = "false";
+      await withServer(app, async (baseUrl) => {
+        const res = await fetch(`${baseUrl}/api/auth/dev-moderator-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sub: "dev-moderator-01" }),
+        });
+        assert.strictEqual(res.status, 403);
+      });
     } finally {
       process.env.NODE_ENV = origEnv;
       process.env.ALLOW_DEV_AUTH = origDevAuth;
