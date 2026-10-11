@@ -98,7 +98,7 @@ export const env = {
   allowDevAuth,
   corsOrigins: toList(process.env.CORS_ORIGINS).length > 0
     ? toList(process.env.CORS_ORIGINS)
-    : ["http://localhost:5173", "http://localhost:3000"],
+    : ["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:3000", "http://127.0.0.1:3000"],
   databasePath: process.env.DATABASE_PATH ?? path.join(process.cwd(), "incognito.sqlite"),
   encryptionKey: process.env.ENCRYPTION_KEY ?? (isDeployedEnv ? "" : "dev-only-local-encryption-key-32b!"),
   authSecret: process.env.AUTH_SECRET ?? (isDeployedEnv ? "" : "dev-only-local-auth-secret-min-32-chars-key!"),

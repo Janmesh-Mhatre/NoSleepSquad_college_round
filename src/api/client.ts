@@ -1,5 +1,7 @@
-// In dev, VITE_API_BASE can be empty to leverage Vite's local proxy to localhost:4000.
-const BASE = (typeof import.meta !== "undefined" && (import.meta as any).env?.VITE_API_BASE as string | undefined) ?? "";
+// Support both VITE_API_BASE and VITE_API_BASE_URL, stripping trailing slash or duplicate /api
+const rawBase = (typeof import.meta !== "undefined" && ((import.meta as any).env?.VITE_API_BASE || (import.meta as any).env?.VITE_API_BASE_URL) as string | undefined) ?? "";
+const cleanBase = rawBase.replace(/\/api\/?$/, "").replace(/\/+$/, "");
+const BASE = cleanBase;
 
 export class ApiError extends Error {
   constructor(public code: string, message: string, public status = 0) {
