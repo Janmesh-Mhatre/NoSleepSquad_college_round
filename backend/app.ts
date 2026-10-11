@@ -62,7 +62,9 @@ export function createApp() {
     }
 
     const sub = typeof req.body?.sub === "string" && req.body.sub.trim() ? req.body.sub.trim() : "dev-user-01";
-    const role = "member";
+    const requestedRole = typeof req.body?.role === "string" ? req.body.role.trim() : "";
+    const role: "member" | "moderator" | "admin" =
+      requestedRole === "admin" ? "admin" : (requestedRole === "moderator" ? "moderator" : "member");
     const token = authService.generateToken({ sub, role });
     return res.json({ token, role, sub });
   });
@@ -151,6 +153,7 @@ export function createApp() {
   // Role-Based Access Control (RBAC)
   app.use("/api/moderator", requireRole(["moderator", "admin"]));
   app.use("/api/security", requireRole(["admin"]));
+  app.use("/api/system", requireRole(["admin"]));
   app.use("/api/audit", requireRole(["admin", "moderator"]));
 
   // Mount routers

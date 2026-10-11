@@ -1,5 +1,6 @@
 // Support both VITE_API_BASE and VITE_API_BASE_URL, stripping trailing slash or duplicate /api
-const rawBase = (typeof import.meta !== "undefined" && ((import.meta as any).env?.VITE_API_BASE || (import.meta as any).env?.VITE_API_BASE_URL) as string | undefined) ?? "";
+const envObj = typeof import.meta !== "undefined" ? (import.meta as any).env : undefined;
+const rawBase: string = typeof envObj?.VITE_API_BASE === "string" ? envObj.VITE_API_BASE : (typeof envObj?.VITE_API_BASE_URL === "string" ? envObj.VITE_API_BASE_URL : "");
 const cleanBase = rawBase.replace(/\/api\/?$/, "").replace(/\/+$/, "");
 const BASE = cleanBase;
 
@@ -25,8 +26,9 @@ const MESSAGES: Record<string, string> = {
   unknown: "The request failed. Please check parameters and try again.",
 };
 
-// Moderator Token Management for Local Development Demo
+// Development Token Management for Local Development Demo
 let moderatorToken: string | null = null;
+let adminToken: string | null = null;
 
 export function getModeratorToken(): string | null {
   if (moderatorToken) return moderatorToken;
@@ -47,7 +49,29 @@ export function setModeratorToken(token: string | null): void {
   }
 }
 
+export function getAdminToken(): string | null {
+  if (adminToken) return adminToken;
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    adminToken = sessionStorage.getItem("incognito_dev_admin_token");
+  }
+  return adminToken;
+}
+
+export function setAdminToken(token: string | null): void {
+  adminToken = token;
+  if (typeof window !== "undefined" && window.sessionStorage) {
+    if (token) {
+      sessionStorage.setItem("incognito_dev_admin_token", token);
+    } else {
+      sessionStorage.removeItem("incognito_dev_admin_token");
+    }
+  }
+}
+
 export async function fetchDevModeratorToken(): Promise<string | null> {
+  const cached = getModeratorToken();
+  if (cached) return cached;
+
   try {
     const url = BASE ? `${BASE}/api/auth/dev-moderator-token` : "/api/auth/dev-moderator-token";
     const res = await fetch(url, {
@@ -67,6 +91,29 @@ export async function fetchDevModeratorToken(): Promise<string | null> {
   return null;
 }
 
+export async function fetchDevAdminToken(): Promise<string | null> {
+  const cached = getAdminToken();
+  if (cached) return cached;
+
+  try {
+    const url = BASE ? `${BASE}/api/auth/dev-token` : "/api/auth/dev-token";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sub: "dev-admin-01", role: "admin" }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.token) {
+      setAdminToken(data.token);
+      return data.token;
+    }
+  } catch {
+    // Network or dev auth unavailable
+  }
+  return null;
+}
+
 export async function request<T>(
   path: string,
   init: { method?: string; body?: unknown; idempotencyKey?: string } = {}
@@ -74,7 +121,17 @@ export async function request<T>(
   const url = BASE ? `${BASE}${path}` : path;
   let token: string | null = null;
 
-  if (path.startsWith("/api/moderator") || path.startsWith("/api/audit") || path.startsWith("/api/security")) {
+  const isAdminRoute = path.startsWith("/api/security") || path.startsWith("/api/system");
+  const isModeratorRoute = path.startsWith("/api/moderator");
+  const isAuditRoute = path.startsWith("/api/audit");
+  const inAdminConsole = typeof window !== "undefined" && window.location?.pathname?.startsWith("/admin");
+
+  if (isAdminRoute || (isAuditRoute && inAdminConsole)) {
+    token = getAdminToken();
+    if (!token) {
+      token = await fetchDevAdminToken();
+    }
+  } else if (isModeratorRoute || isAuditRoute) {
     token = getModeratorToken();
     if (!token) {
       token = await fetchDevModeratorToken();
@@ -100,9 +157,17 @@ export async function request<T>(
     throw new ApiError("network", MESSAGES.network);
   }
 
-  // If a 401 unauthenticated response is returned on a moderator route, try refreshing the token once
-  if (res.status === 401 && (path.startsWith("/api/moderator") || path.startsWith("/api/audit") || path.startsWith("/api/security"))) {
-    const freshToken = await fetchDevModeratorToken();
+  // If a 401 unauthenticated response is returned, attempt one token refresh
+  if (res.status === 401) {
+    let freshToken: string | null = null;
+    if (isAdminRoute || (isAuditRoute && inAdminConsole)) {
+      setAdminToken(null);
+      freshToken = await fetchDevAdminToken();
+    } else if (isModeratorRoute || isAuditRoute) {
+      setModeratorToken(null);
+      freshToken = await fetchDevModeratorToken();
+    }
+
     if (freshToken) {
       headers["Authorization"] = `Bearer ${freshToken}`;
       try {

@@ -237,6 +237,49 @@ test("AUTHENTICATION & OIDC SECURITY HARDENING SUITE", async (suite) => {
         });
         assert.strictEqual(res.status, 403);
       });
+
+      // 2.8 Dev admin token: POST /api/auth/dev-token with role="admin" yields admin JWT and grants access to /api/security/tests and /api/system/status
+      process.env.NODE_ENV = "development";
+      process.env.ALLOW_DEV_AUTH = "true";
+      await withServer(app, async (baseUrl) => {
+        const res = await fetch(`${baseUrl}/api/auth/dev-token`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sub: "dev-admin-01", role: "admin" }),
+        });
+        assert.strictEqual(res.status, 200);
+        const data = await res.json() as any;
+        assert.ok(data.token);
+        assert.strictEqual(data.role, "admin");
+        assert.strictEqual(data.sub, "dev-admin-01");
+
+        // Admin JWT claims verification
+        const claims = authService.verifyToken(data.token);
+        assert.strictEqual(claims.role, "admin");
+
+        // Access /api/security/tests with admin token -> 200 OK (no 403)
+        const secRes = await fetch(`${baseUrl}/api/security/tests`, {
+          headers: { Authorization: `Bearer ${data.token}` },
+        });
+        assert.strictEqual(secRes.status, 200);
+
+        // Access /api/system/status with admin token -> 200 OK (no 403)
+        const sysRes = await fetch(`${baseUrl}/api/system/status`, {
+          headers: { Authorization: `Bearer ${data.token}` },
+        });
+        assert.strictEqual(sysRes.status, 200);
+
+        // Unauthenticated access to /api/system/status fails with 401
+        const unauthSys = await fetch(`${baseUrl}/api/system/status`);
+        assert.strictEqual(unauthSys.status, 401);
+
+        // Moderator token access to /api/security/tests fails with 403
+        const modToken = authService.generateToken({ sub: "mod-test", role: "moderator" });
+        const modOnAdmin = await fetch(`${baseUrl}/api/security/tests`, {
+          headers: { Authorization: `Bearer ${modToken}` },
+        });
+        assert.strictEqual(modOnAdmin.status, 403);
+      });
     } finally {
       process.env.NODE_ENV = origEnv;
       process.env.ALLOW_DEV_AUTH = origDevAuth;

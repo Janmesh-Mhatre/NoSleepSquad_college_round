@@ -99,5 +99,5 @@ export const securityService = {
 
 export const systemService = {
   getHealth: () =>
-    request<SystemHealth>("/api/health"),
+    request<SystemHealth>("/api/system/status"),
 };
